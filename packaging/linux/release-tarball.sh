@@ -9,7 +9,7 @@ set -euo pipefail
 version=${1:?usage: release-tarball.sh <version> <outdir>}
 outdir=${2:?usage: release-tarball.sh <version> <outdir>}
 arch=$(uname -m)
-id=dev.stormlantern.AetherDesk
+id=nl.stormlantern.AetherDesk
 name=aetherdesk-$version-$arch-linux
 target=${CARGO_TARGET_DIR:-target}
 
@@ -20,6 +20,7 @@ trap 'rm -rf "$stage"' EXIT
 dir=$stage/$name
 install -Dm755 "$target/release/aetherdesk" -t "$dir/"
 install -Dm644 "packaging/linux/$id.desktop" -t "$dir/"
+install -Dm644 "packaging/linux/$id.metainfo.xml" -t "$dir/"
 install -Dm644 packaging/linux/icons/* -t "$dir/icons/"
 install -Dm644 LICENSE-APACHE LICENSE-MIT assets/fonts/Inter-OFL.txt packaging/linux/INSTALL.md -t "$dir/"
 

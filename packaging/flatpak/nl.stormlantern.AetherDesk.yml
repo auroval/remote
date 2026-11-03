@@ -1,0 +1,109 @@
+# Flatpak of the AetherDesk Linux client, hosted with our own releases (not
+# Flathub; see #80). Build from the repository root:
+#
+#   packaging/flatpak/build.sh <version> <outdir>
+#
+# SDL3 comes with the runtime. Its FFmpeg lacks the decoders and hardware
+# paths the client needs, so that's built here. Cargo fetches crates during
+# the build (network allowed), which is fine outside Flathub.
+id: nl.stormlantern.AetherDesk
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm22
+command: aetherdesk
+finish-args:
+  # QUIC to the Mac, and mDNS to find it.
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  # GPU: rendering, and decoding with CUDA (NVIDIA) or VA-API.
+  - --device=dri
+  # The Mac's sound.
+  - --socket=pulseaudio
+  # Identity and pairings, shared with a native install.
+  - --filesystem=xdg-config/aetherdesk:create
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/pkgconfig
+  - /lib/cmake
+  - /share/doc
+  - /share/man
+  - '*.a'
+
+modules:
+  # Headers only: FFmpeg loads the driver's CUDA libraries at run time.
+  - name: nv-codec-headers
+    buildsystem: simple
+    build-commands:
+      - make PREFIX=/app install
+    sources:
+      - type: git
+        url: https://github.com/FFmpeg/nv-codec-headers.git
+        tag: n13.0.19.1
+        commit: 88fee5c37318c991a8762d423530f91681e32e3a
+
+  # Just what the client uses: H.264 and HEVC decoding (on the GPU when it
+  # can), Opus for the sound, and libopus (from the runtime) to encode the
+  # microphone.
+  - name: ffmpeg
+    config-opts:
+      - --disable-static
+      - --enable-shared
+      - --disable-programs
+      - --disable-doc
+      - --disable-debug
+      - --disable-avdevice
+      - --disable-avfilter
+      - --disable-everything
+      - --enable-decoder=h264,hevc,opus
+      - --enable-parser=h264,hevc,opus
+      - --enable-libopus
+      - --enable-encoder=libopus
+      - --enable-ffnvcodec
+      - --enable-cuda
+      - --enable-cuvid
+      - --enable-nvdec
+      - --enable-vaapi
+      - --enable-hwaccel=h264_nvdec,hevc_nvdec,h264_vaapi,hevc_vaapi
+    sources:
+      - type: archive
+        url: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+        # ffmpeg.org is sometimes unreachable (it timed out in CI); these
+        # carry the same tarball, and the sha256 below checks it.
+        mirror-urls:
+          - https://deb.debian.org/debian/pool/main/f/ffmpeg/ffmpeg_9.0.2.orig.tar.xz
+          - https://ftp.osuosl.org/pub/blfs/conglomeration/ffmpeg/ffmpeg-9.0.2.tar.xz
+        sha256: 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+
+  - name: aetherdesk
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm22/bin
+      prepend-ld-library-path: /usr/lib/sdk/llvm22/lib
+      build-args:
+        - --share=network
+      env:
+        CARGO_HOME: /run/build/aetherdesk/cargo
+        LIBCLANG_PATH: /usr/lib/sdk/llvm22/lib
+    build-commands:
+      - cargo build --release --locked -p aetherdesk-linux-client --bin aetherdesk
+      - install -Dm755 target/release/aetherdesk -t /app/bin/
+      - install -Dm644 packaging/linux/${FLATPAK_ID}.desktop -t /app/share/applications/
+      - install -Dm644 packaging/linux/${FLATPAK_ID}.metainfo.xml -t /app/share/metainfo/
+      - install -Dm644 packaging/linux/icons/${FLATPAK_ID}.svg -t /app/share/icons/hicolor/scalable/apps/
+      - for s in 32 48 64 128 256; do install -Dm644 packaging/linux/icons/${FLATPAK_ID}-$s.png /app/share/icons/hicolor/${s}x${s}/apps/${FLATPAK_ID}.png; done
+      - install -Dm644 LICENSE-APACHE LICENSE-MIT assets/fonts/Inter-OFL.txt -t /app/share/licenses/${FLATPAK_ID}/
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - target
+          - tgt-rel
+          - .flatpak-builder
+          - flatpak-build

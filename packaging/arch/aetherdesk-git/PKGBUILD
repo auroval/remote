@@ -59,9 +59,10 @@ check() {
 
 package() {
   cd "$_name"
-  local id=dev.stormlantern.AetherDesk
+  local id=nl.stormlantern.AetherDesk
   install -Dm755 target/release/aetherdesk -t "$pkgdir/usr/bin/"
   install -Dm644 "packaging/linux/$id.desktop" -t "$pkgdir/usr/share/applications/"
+  install -Dm644 "packaging/linux/$id.metainfo.xml" -t "$pkgdir/usr/share/metainfo/"
   install -Dm644 "packaging/linux/icons/$id.svg" -t "$pkgdir/usr/share/icons/hicolor/scalable/apps/"
   local size
   for size in 32 48 64 128 256; do

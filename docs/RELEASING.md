@@ -15,6 +15,9 @@ For now: alphas, as GitHub pre-releases and Homebrew casks in
    GitHub release as a pre-release, and attaches:
    - `aetherdesk-<version>-x86_64-linux.tar.gz` (client, built in the Arch
      devcontainer image) and its `.sha256`;
+   - `aetherdesk-<version>-x86_64.flatpak` (client as a Flatpak bundle, built
+     by `packaging/flatpak/build.sh` on runtime `org.freedesktop.Platform`)
+     and its `.sha256`;
    - `aetherdesk-host-<version>-arm64-macos.tar.gz` (host, signed with the Developer ID and notarized) and
      its `.sha256`.
 3. **Casks.** With a checkout of the tap:

@@ -33,11 +33,17 @@ Then, **once**, open System Settings → Privacy & Security and add `/Library/Ap
 
 ### 2. On Linux
 
+Download `aetherdesk-<version>-x86_64.flatpak` from the [latest release](https://github.com/stormlantern-dev/aetherdesk/releases) and install it:
+
 ```sh
-brew install --cask stormlantern-dev/tap/aetherdesk
+flatpak install --user aetherdesk-<version>-x86_64.flatpak
 ```
 
-The alpha build is linked against current Arch Linux libraries, so for now it runs on an up-to-date **Arch or CachyOS** (`pacman -S sdl3 ffmpeg`). Elsewhere, build it from source (see [Development](#development)). An NVIDIA (RTX 20 and later) or recent Intel GPU decodes on the GPU and gets the sharpest picture (HEVC 4:4:4); otherwise it decodes H.264 in software.
+This runs on any distribution with Flatpak, and puts AetherDesk in your application menu. From a terminal the command is `flatpak run nl.stormlantern.AetherDesk`; the steps below write `aetherdesk` for short.
+
+On an up-to-date **Arch or CachyOS** there's also a Homebrew cask, linked against the system libraries (`pacman -S sdl3 ffmpeg`): `brew install --cask stormlantern-dev/tap/aetherdesk`. It doesn't add a menu entry.
+
+An NVIDIA (RTX 20 and later) or recent Intel GPU decodes on the GPU and gets the sharpest picture (HEVC 4:4:4); otherwise it decodes H.264 in software.
 
 ### 3. Pair, once
 
@@ -67,8 +73,8 @@ Away from home, connect to the Mac's VPN or Tailscale address: `aetherdesk <addr
 
 ### Updating and removing
 
-- **Update:** `brew upgrade`, then on the Mac `aether-agent install` again (the installed copy is what runs). Releases are signed with a Developer ID and notarized, so the two permissions stay granted across updates.
-- **Remove:** on the Mac `aether-agent uninstall`, then `brew uninstall --cask aetherdesk-host`; on Linux `brew uninstall --cask aetherdesk`.
+- **Update:** on Linux install the new release's `.flatpak` the same way (or `brew upgrade`); on the Mac `brew upgrade`, then `aether-agent install` again (the installed copy is what runs). Releases are signed with a Developer ID and notarized, so the two permissions stay granted across updates.
+- **Remove:** on the Mac `aether-agent uninstall`, then `brew uninstall --cask aetherdesk-host`; on Linux `flatpak uninstall nl.stormlantern.AetherDesk` (or `brew uninstall --cask aetherdesk`).
 
 ### If it doesn't connect
 
