@@ -79,6 +79,8 @@ pub struct Link {
     pub pointer: mpsc::Receiver<HostControl>,
     /// The Mac's sound, when asked for, in arrival order.
     pub audio: Option<mpsc::Receiver<AudioPacket>>,
+    /// Our microphone, out to the Mac: when asked for and the host takes it.
+    pub mic: Option<UnboundedSender<AudioPacket>>,
 }
 
 /// Ends a [`Link`] on purpose. The host tells "the client left" (lock the
@@ -159,12 +161,20 @@ struct Requests {
     clipboard: UnboundedReceiver<String>,
     /// Our window's size in pixels, when it changed.
     view: UnboundedReceiver<(u32, u32)>,
+    /// Microphone packets for the Mac.
+    mic: UnboundedReceiver<AudioPacket>,
 }
 
 /// Connects to a paired host; returns once it has said welcome. A first
 /// connection that fails is an error; after that the link reconnects on its
 /// own.
-pub fn connect(host: Host, id: Identity, clipboard: bool, audio: bool) -> anyhow::Result<Link> {
+pub fn connect(
+    host: Host,
+    id: Identity,
+    clipboard: bool,
+    audio: bool,
+    mic: bool,
+) -> anyhow::Result<Link> {
     let (ready_tx, ready_rx) = mpsc::channel();
     let (quit, quit_rx) = unbounded_channel();
     let (done_tx, done) = mpsc::channel::<()>();
@@ -181,7 +191,11 @@ pub fn connect(host: Host, id: Identity, clipboard: bool, audio: bool) -> anyhow
                 return;
             }
         };
-        let options = Options { clipboard, audio };
+        let options = Options {
+            clipboard,
+            audio,
+            mic,
+        };
         runtime.block_on(link(host, id, options, ready_tx, closer, quit_rx));
     })?;
     ready_rx.recv().context("network thread died")?
@@ -192,6 +206,7 @@ pub fn connect(host: Host, id: Identity, clipboard: bool, audio: bool) -> anyhow
 struct Options {
     clipboard: bool,
     audio: bool,
+    mic: bool,
 }
 
 async fn link(
@@ -228,6 +243,7 @@ async fn link(
     let (clipboard_in_tx, clipboard_in) = mpsc::channel();
     let (pointer_tx, pointer) = mpsc::channel();
     let (audio_tx, audio) = mpsc::channel();
+    let (mic_tx, mic_rx) = unbounded_channel();
     let shared = Shared {
         frames: frames_tx,
         sync: Arc::new(ClockSync::default()),
@@ -247,6 +263,7 @@ async fn link(
         quit,
         clipboard: clipboard_out_rx,
         view: view_rx,
+        mic: mic_rx,
     };
     let sent = ready.send(Ok(Link {
         welcome: live.welcome.clone(),
@@ -264,6 +281,7 @@ async fn link(
         view,
         pointer,
         audio: options.audio.then_some(audio),
+        mic: (options.mic && live.welcome.mic).then_some(mic_tx),
     }));
     if sent.is_err() {
         return;
@@ -660,6 +678,7 @@ async fn open(host: &Host, id: &Identity, options: Options) -> Result<Live, Fail
             clipboard: options.clipboard,
             codecs: crate::decoder::codecs().to_vec(),
             audio: options.audio,
+            mic: options.mic,
         },
     };
     quic::send(&mut ctl_send, &hello)
@@ -826,6 +845,12 @@ impl Live {
                 }
                 Some(text) = requests.clipboard.recv() => {
                     let _ = quic::send(&mut ctl_send, &ClientControl::Clipboard(text)).await;
+                }
+                // Like the Mac's sound: what can't go now is dropped.
+                Some(packet) = requests.mic.recv() => {
+                    if let Ok(bytes) = packet.to_datagram() {
+                        let _ = conn.send_datagram(bytes.into());
+                    }
                 }
                 _ = ping.tick() => {
                     let msg = ClientControl::Ping { client_us: now_us() as u64 };

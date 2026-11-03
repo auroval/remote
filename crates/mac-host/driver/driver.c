@@ -1,6 +1,8 @@
-// The AetherDesk audio device (#82): an output device that hands what apps
-// play to the host's daemon, which sends it to the client. During a session
-// the agent makes it the Mac's output, so the Mac itself stays quiet.
+// The AetherDesk audio device (#82): an output that hands what apps play to
+// the host's daemon, which sends it to the client, and an input that plays
+// the client's microphone. During a session the agent makes it the Mac's
+// output (and input, when the client sends its microphone), so the Mac
+// itself stays quiet.
 //
 // coreaudiod loads it from /Library/Audio/Plug-Ins/HAL/AetherDesk.driver
 // (`aether-agent install` puts it there). The device has one stereo float32
@@ -27,7 +29,13 @@ enum {
     kPlugIn = kAudioObjectPlugInObject,
     kDevice = 2,
     kStream = 3,
+    kMicStream = 4,
 };
+
+// How far behind the daemon's newest microphone frame we read: the network
+// is uneven, this evens it out. Beyond kMicMaxLag we jump closer again.
+#define kMicLag 1440u    // 30 ms
+#define kMicMaxLag 7200u // 150 ms
 
 #define kDeviceUID "nl.stormlantern.AetherDesk.speaker"
 #define kModelUID "nl.stormlantern.AetherDesk"
@@ -41,6 +49,9 @@ static pthread_mutex_t gLock = PTHREAD_MUTEX_INITIALIZER;
 
 static UInt32 gIOClients;
 static Boolean gStreamActive = true;
+static Boolean gMicActive = true;
+// The next microphone frame to read; UINT64_MAX: not reading yet.
+static UInt64 gMicRead = UINT64_MAX;
 static Float64 gTicksPerFrame;
 static UInt64 gAnchor;
 static UInt64 gPeriods;
@@ -56,6 +67,17 @@ static const AudioStreamBasicDescription kFormat = {
     .mFramesPerPacket = 1,
     .mBytesPerFrame = 4 * AD_CHANNELS,
     .mChannelsPerFrame = AD_CHANNELS,
+    .mBitsPerChannel = 32,
+};
+
+static const AudioStreamBasicDescription kMicFormat = {
+    .mSampleRate = AD_RATE,
+    .mFormatID = kAudioFormatLinearPCM,
+    .mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagsNativeEndian | kAudioFormatFlagIsPacked,
+    .mBytesPerPacket = 4 * AD_MIC_CHANNELS,
+    .mFramesPerPacket = 1,
+    .mBytesPerFrame = 4 * AD_MIC_CHANNELS,
+    .mChannelsPerFrame = AD_MIC_CHANNELS,
     .mBitsPerChannel = 32,
 };
 
@@ -205,8 +227,13 @@ static OSStatus property(AudioObjectID object, const AudioObjectPropertyAddress 
             ANSWER(CFStringRef, CFSTR("Stormlantern"));
         case kAudioObjectPropertyOwnedObjects:
         case kAudioDevicePropertyStreams: {
-            AudioObjectID ids[] = {kStream};
-            return answer_ids(ids, input ? 0 : 1, inSize, outSize, out);
+            Boolean output = a->mScope == kAudioObjectPropertyScopeOutput;
+            if (input) {
+                AudioObjectID ids[] = {kMicStream};
+                return answer_ids(ids, 1, inSize, outSize, out);
+            }
+            AudioObjectID ids[] = {kStream, kMicStream};
+            return answer_ids(ids, output ? 1 : 2, inSize, outSize, out);
         }
         case kAudioObjectPropertyControlList:
             return answer_ids(NULL, 0, inSize, outSize, out);
@@ -231,6 +258,7 @@ static OSStatus property(AudioObjectID object, const AudioObjectPropertyAddress 
             ANSWER(UInt32, running);
         }
         case kAudioDevicePropertyDeviceCanBeDefaultDevice:
+            ANSWER(UInt32, 1);
         case kAudioDevicePropertyDeviceCanBeDefaultSystemDevice:
             ANSWER(UInt32, input ? 0 : 1);
         case kAudioDevicePropertyLatency:
@@ -262,6 +290,9 @@ static OSStatus property(AudioObjectID object, const AudioObjectPropertyAddress 
         break;
 
     case kStream:
+    case kMicStream: {
+        Boolean mic = object == kMicStream;
+        const AudioStreamBasicDescription *format = mic ? &kMicFormat : &kFormat;
         switch (s) {
         case kAudioObjectPropertyBaseClass:
             ANSWER(AudioClassID, kAudioObjectClassID);
@@ -272,31 +303,32 @@ static OSStatus property(AudioObjectID object, const AudioObjectPropertyAddress 
         case kAudioObjectPropertyOwnedObjects:
             return answer_ids(NULL, 0, inSize, outSize, out);
         case kAudioObjectPropertyName:
-            ANSWER(CFStringRef, CFSTR("AetherDesk speaker"));
+            ANSWER(CFStringRef, mic ? CFSTR("AetherDesk microphone") : CFSTR("AetherDesk speaker"));
         case kAudioStreamPropertyIsActive: {
             pthread_mutex_lock(&gLock);
-            UInt32 active = gStreamActive;
+            UInt32 active = mic ? gMicActive : gStreamActive;
             pthread_mutex_unlock(&gLock);
             ANSWER(UInt32, active);
         }
         case kAudioStreamPropertyDirection:
-            ANSWER(UInt32, 0); // output
+            ANSWER(UInt32, mic ? 1 : 0); // 1: input
         case kAudioStreamPropertyTerminalType:
-            ANSWER(UInt32, kAudioStreamTerminalTypeSpeaker);
+            ANSWER(UInt32, mic ? kAudioStreamTerminalTypeMicrophone : kAudioStreamTerminalTypeSpeaker);
         case kAudioStreamPropertyStartingChannel:
             ANSWER(UInt32, 1);
         case kAudioStreamPropertyLatency:
             ANSWER(UInt32, 0);
         case kAudioStreamPropertyVirtualFormat:
         case kAudioStreamPropertyPhysicalFormat:
-            ANSWER(AudioStreamBasicDescription, kFormat);
+            ANSWER(AudioStreamBasicDescription, *format);
         case kAudioStreamPropertyAvailableVirtualFormats:
         case kAudioStreamPropertyAvailablePhysicalFormats: {
-            AudioStreamRangedDescription d = {kFormat, {AD_RATE, AD_RATE}};
+            AudioStreamRangedDescription d = {*format, {AD_RATE, AD_RATE}};
             ANSWER(AudioStreamRangedDescription, d);
         }
         }
         break;
+    }
 
     default:
         return kAudioHardwareBadObjectError;
@@ -388,7 +420,7 @@ static OSStatus IsPropertySettable(AudioServerPlugInDriverRef d, AudioObjectID o
     OSStatus err = property(object, a, 0, NULL, 0, &size, NULL);
     if (err)
         return err;
-    *out = object == kStream &&
+    *out = (object == kStream || object == kMicStream) &&
            (a->mSelector == kAudioStreamPropertyIsActive || a->mSelector == kAudioStreamPropertyVirtualFormat ||
             a->mSelector == kAudioStreamPropertyPhysicalFormat);
     return noErr;
@@ -409,14 +441,15 @@ static OSStatus GetPropertyData(AudioServerPlugInDriverRef d, AudioObjectID obje
 static OSStatus SetPropertyData(AudioServerPlugInDriverRef d, AudioObjectID object, pid_t pid,
                                 const AudioObjectPropertyAddress *a, UInt32 qualifierSize, const void *qualifier,
                                 UInt32 inSize, const void *data) {
-    if (object != kStream)
+    if (object != kStream && object != kMicStream)
         return kAudioHardwareUnknownPropertyError;
+    Boolean mic = object == kMicStream;
     switch (a->mSelector) {
     case kAudioStreamPropertyIsActive:
         if (inSize != sizeof(UInt32))
             return kAudioHardwareBadPropertySizeError;
         pthread_mutex_lock(&gLock);
-        gStreamActive = *(const UInt32 *)data != 0;
+        *(mic ? &gMicActive : &gStreamActive) = *(const UInt32 *)data != 0;
         pthread_mutex_unlock(&gLock);
         return noErr;
     case kAudioStreamPropertyVirtualFormat:
@@ -425,7 +458,7 @@ static OSStatus SetPropertyData(AudioServerPlugInDriverRef d, AudioObjectID obje
             return kAudioHardwareBadPropertySizeError;
         const AudioStreamBasicDescription *f = data;
         if (f->mSampleRate != AD_RATE || f->mFormatID != kFormat.mFormatID ||
-            f->mChannelsPerFrame != AD_CHANNELS || f->mBitsPerChannel != 32 ||
+            f->mChannelsPerFrame != (mic ? AD_MIC_CHANNELS : AD_CHANNELS) || f->mBitsPerChannel != 32 ||
             !(f->mFormatFlags & kAudioFormatFlagIsFloat))
             return kAudioDeviceUnsupportedFormatError;
         return noErr;
@@ -440,6 +473,7 @@ static OSStatus StartIO(AudioServerPlugInDriverRef d, AudioObjectID device, UInt
         connect_daemon();
         gAnchor = mach_absolute_time();
         gPeriods = 0;
+        gMicRead = UINT64_MAX;
         os_log(gLog, "IO started");
     }
     gIOClients++;
@@ -472,7 +506,7 @@ static OSStatus GetZeroTimeStamp(AudioServerPlugInDriverRef d, AudioObjectID dev
 
 static OSStatus WillDoIOOperation(AudioServerPlugInDriverRef d, AudioObjectID device, UInt32 client,
                                   UInt32 op, Boolean *outWillDo, Boolean *outInPlace) {
-    *outWillDo = op == kAudioServerPlugInIOOperationWriteMix;
+    *outWillDo = op == kAudioServerPlugInIOOperationWriteMix || op == kAudioServerPlugInIOOperationReadInput;
     *outInPlace = true;
     return noErr;
 }
@@ -482,13 +516,40 @@ static OSStatus BeginIOOperation(AudioServerPlugInDriverRef d, AudioObjectID dev
     return noErr;
 }
 
+// The client's microphone into `out`, about kMicLag behind the newest frame
+// the daemon wrote. When it runs dry (the client stopped, or the network
+// stalled), silence until kMicLag has built up again.
+static void read_mic(struct ad_shared *shared, float *out, UInt32 frames) {
+    static Boolean refill = true;
+    memset(out, 0, frames * AD_MIC_CHANNELS * sizeof(float));
+    if (!shared)
+        return;
+    UInt64 written = atomic_load_explicit(&shared->mic_written, memory_order_acquire);
+    if (gMicRead == UINT64_MAX || gMicRead > written || written - gMicRead > kMicMaxLag) {
+        // Starting, the daemon started again, or far behind: catch up.
+        gMicRead = written > kMicLag ? written - kMicLag : written;
+        refill = written <= kMicLag;
+    }
+    UInt64 ready = written - gMicRead;
+    if (refill ? ready < kMicLag : ready < frames) {
+        refill = true;
+        return;
+    }
+    refill = false;
+    const float *ring = shared->data + AD_MIC_OFFSET;
+    for (UInt32 n = 0; n < frames; n++, gMicRead++)
+        out[n] = ring[gMicRead % AD_MIC_FRAMES];
+}
+
 static OSStatus DoIOOperation(AudioServerPlugInDriverRef d, AudioObjectID device, AudioObjectID stream,
                               UInt32 client, UInt32 op, UInt32 frames, const AudioServerPlugInIOCycleInfo *cycle,
                               void *main, void *secondary) {
-    if (op != kAudioServerPlugInIOOperationWriteMix || !main)
-        return noErr;
     struct ad_shared *shared = atomic_load_explicit(&gShared, memory_order_acquire);
-    if (!shared)
+    if (op == kAudioServerPlugInIOOperationReadInput && main && stream == kMicStream) {
+        read_mic(shared, main, frames);
+        return noErr;
+    }
+    if (op != kAudioServerPlugInIOOperationWriteMix || !main || !shared)
         return noErr;
     UInt64 start = (UInt64)cycle->mOutputTime.mSampleTime;
     const float *src = main;

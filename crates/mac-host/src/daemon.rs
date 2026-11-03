@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use aetherdesk_proto::CLOSE_NO_AGENT;
 use aetherdesk_proto::trust::Identity;
-use aetherdesk_proto::{Codec, HostControl, SessionKind, VideoFrame};
+use aetherdesk_proto::{AudioPacket, Codec, HostControl, SessionKind, VideoFrame};
 use aetherdesk_proto::{discovery, quic};
 use anyhow::{Context, anyhow, bail};
 use tokio::net::{UnixListener, UnixStream};
@@ -155,12 +155,19 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
                     clipboard,
                     codec,
                     audio,
+                    mic,
                 }) => {
                     println!("{peer}: {} ({}), {codec}", c.name, c.fingerprint.short());
                     if pending_lock.take().is_some() {
                         println!("  the client is back: not locking");
                     }
-                    match client(&conn, send, recv, &agents, s, clipboard, codec, audio).await {
+                    let wants = Wants {
+                        clipboard,
+                        codec,
+                        audio,
+                        mic,
+                    };
+                    match client(&conn, send, recv, &agents, s, wants).await {
                         Ok(()) => println!("{peer}: disconnected"),
                         Err(e) => eprintln!("{peer}: {e:#}"),
                     }
@@ -431,6 +438,7 @@ impl Drop for InUse {
 }
 
 /// Points `agent`'s messages at this client and starts its capture.
+#[expect(clippy::too_many_arguments)]
 fn attach(
     agent: &Arc<Agent>,
     tx: &mpsc::Sender<FromAgent>,
@@ -439,6 +447,7 @@ fn attach(
     codec: Codec,
     view: &View,
     sound: Option<&quinn::Connection>,
+    mic: bool,
 ) -> anyhow::Result<InUse> {
     *agent.client.lock().unwrap() = Some(tx.clone());
     *agent.sound.lock().unwrap() = sound.cloned();
@@ -454,6 +463,7 @@ fn attach(
             view: *view.lock().unwrap(),
             audio: sound.is_some(),
             speaker: agent.speaker.is_some(),
+            mic,
         })
         .map_err(|_| anyhow!("agent {} went away", agent.id))?;
     Ok(in_use)
@@ -467,17 +477,31 @@ fn kind(agent: &Agent) -> SessionKind {
     }
 }
 
-#[expect(clippy::too_many_arguments)]
+/// What the client asked for.
+#[derive(Clone, Copy)]
+struct Wants {
+    clipboard: bool,
+    codec: Codec,
+    audio: bool,
+    mic: bool,
+}
+
 async fn client(
     conn: &quinn::Connection,
     mut ctl_send: quinn::SendStream,
     ctl_recv: quinn::RecvStream,
     agents: &Agents,
     s: &StreamSettings,
-    clipboard: bool,
-    codec: Codec,
-    audio: bool,
+    wants: Wants,
 ) -> anyhow::Result<()> {
+    let Wants {
+        clipboard,
+        codec,
+        audio,
+        mic,
+    } = wants;
+    // The microphone needs the AetherDesk device.
+    let mic = mic && agents.speaker.is_some();
     // Before picking the agent: a sleeping display has to come back before
     // the agent can capture it.
     let _awake = power::keep_awake();
@@ -494,7 +518,7 @@ async fn client(
     // The client's window size, as last said; a new agent starts at it.
     let view: View = Arc::default();
     let sound = audio.then(|| conn.clone());
-    let in_use = attach(&agent, &tx, s, clipboard, codec, &view, sound.as_ref())?;
+    let in_use = attach(&agent, &tx, s, clipboard, codec, &view, sound.as_ref(), mic)?;
 
     let (width, height) = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -508,7 +532,20 @@ async fn client(
     })
     .await
     .context("agent didn't start capturing within 10 s")??;
-    session::welcome(&mut ctl_send, width, height, codec).await?;
+    session::welcome(&mut ctl_send, width, height, codec, mic).await?;
+    // The client's microphone, into the device's input.
+    let mic_in = agents.speaker.clone().filter(|_| mic).map(|speaker| {
+        let conn = conn.clone();
+        println!("  microphone: from the client");
+        tokio::spawn(async move {
+            while let Ok(bytes) = conn.read_datagram().await {
+                if let Ok(packet) = AudioPacket::from_datagram(&bytes) {
+                    speaker.mic(&packet);
+                }
+            }
+            speaker.mic_ended();
+        })
+    });
     let mut video = conn.open_uni().await.context("video stream")?;
 
     // Keyframe requests and input go to whichever agent is current.
@@ -562,10 +599,14 @@ async fn client(
         view,
         frames: frames_tx,
         sound,
+        mic,
     }));
     let result = session::send_frames(conn, &mut video, &mut frames, None).await;
     control.abort();
     input.abort();
+    if let Some(t) = mic_in {
+        t.abort();
+    }
     // Dropping the follower drops its InUse, which stops the capture.
     follow.abort();
     result
@@ -586,6 +627,8 @@ struct Following {
     frames: mpsc::Sender<Result<VideoFrame, String>>,
     /// The client's connection, when it wants sound.
     sound: Option<quinn::Connection>,
+    /// The client sends its microphone.
+    mic: bool,
 }
 
 /// Relays the current agent's frames, and switches to the agent of the new
@@ -648,6 +691,7 @@ async fn follow_console(mut f: Following) {
                             f.codec,
                             &f.view,
                             f.sound.as_ref(),
+                            f.mic,
                         ) {
                             Ok(in_use) => {
                                 f.in_use = in_use; // drops the old one: Stop
@@ -782,7 +826,17 @@ mod tests {
         let agent = agents.for_console().expect("no agent for the console");
         let (tx, rx) = mpsc::channel(FRAME_QUEUE);
         let view: View = Arc::new(Mutex::new(Some((800, 600))));
-        let in_use = attach(&agent, &tx, &SETTINGS, true, Codec::Hevc444, &view, None).unwrap();
+        let in_use = attach(
+            &agent,
+            &tx,
+            &SETTINGS,
+            true,
+            Codec::Hevc444,
+            &view,
+            None,
+            false,
+        )
+        .unwrap();
         let current = Arc::new(Mutex::new(agent));
         let (notices, notices_rx) = mpsc::unbounded_channel();
         let (frames_tx, frames) = mpsc::channel(FRAME_QUEUE);
@@ -799,6 +853,7 @@ mod tests {
             view: view.clone(),
             frames: frames_tx,
             sound: None,
+            mic: false,
         }));
         Session {
             frames,

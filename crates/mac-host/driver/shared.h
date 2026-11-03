@@ -8,11 +8,14 @@
 
 #define AD_SERVICE "nl.stormlantern.aetherdesk.audio"
 #define AD_MAGIC 0x41444155u // "ADAU"
-#define AD_VERSION 1u
+#define AD_VERSION 2u
 #define AD_RATE 48000
 #define AD_CHANNELS 2
 // About a third of a second at 48 kHz.
 #define AD_RING_FRAMES 16384u
+// The microphone: mono, its own ring after the speaker's.
+#define AD_MIC_CHANNELS 1
+#define AD_MIC_FRAMES 16384u
 
 #define AD_MSG_HELLO 0x4144
 #define AD_MSG_MEMORY 0x4145
@@ -28,12 +31,21 @@ struct ad_shared {
     _Atomic uint64_t written;
     _Atomic uint64_t host;
     _Atomic uint64_t cycles;
-    uint64_t reserved[3];
+    // The microphone, the other way: the daemon writes the client's frames
+    // at mic[n % AD_MIC_FRAMES] and counts them here; the plug-in reads
+    // behind it.
+    _Atomic uint64_t mic_written;
+    uint64_t reserved[2];
     float data[];
 };
 
-#define AD_SHARED_BYTES \
-    ((sizeof(struct ad_shared) + AD_RING_FRAMES * AD_CHANNELS * sizeof(float) + 16383) & ~(size_t)16383)
+// Where the microphone's ring starts in `data`.
+#define AD_MIC_OFFSET (AD_RING_FRAMES * AD_CHANNELS)
+
+#define AD_SHARED_BYTES                                                                                     \
+    ((sizeof(struct ad_shared) +                                                                            \
+      (AD_RING_FRAMES * AD_CHANNELS + AD_MIC_FRAMES * AD_MIC_CHANNELS) * sizeof(float) + 16383) &            \
+     ~(size_t)16383)
 
 struct ad_hello {
     mach_msg_header_t header;

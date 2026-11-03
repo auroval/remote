@@ -282,6 +282,7 @@ mod linux {
                 clipboard,
                 codecs,
                 audio,
+                ..
             } if p.paired.contains(&client) => {
                 println!("  clipboard sync {}", if clipboard { "on" } else { "off" });
                 println!("  sound {}", if audio { "on" } else { "off" });
@@ -360,6 +361,7 @@ mod linux {
             width: w,
             height: h,
             codec,
+            mic: false,
         };
         quic::send(&mut ctl_send, &welcome).await?;
         let mut video = conn.open_uni().await?;

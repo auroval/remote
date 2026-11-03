@@ -248,6 +248,137 @@ impl Drop for OpusEncoder {
     }
 }
 
+/// Opus packets of [`AUDIO_FRAMES`] → interleaved PCM: the client's
+/// microphone ([`aetherdesk_proto::MIC_CHANNELS`]).
+pub(crate) struct OpusDecoder {
+    converter: AudioConverterRef,
+    channels: u32,
+    out: Vec<f32>,
+}
+
+// Used from one thread at a time (behind a Mutex).
+unsafe impl Send for OpusDecoder {}
+
+/// One packet for the decoder's input callback.
+struct PacketFeed {
+    data: *const u8,
+    len: u32,
+    channels: u32,
+    description: AudioStreamPacketDescription,
+    given: bool,
+}
+
+unsafe extern "C-unwind" fn feed_packet(
+    _converter: AudioConverterRef,
+    packets: NonNull<u32>,
+    list: NonNull<AudioBufferList>,
+    descriptions: *mut *mut AudioStreamPacketDescription,
+    user: *mut c_void,
+) -> i32 {
+    // SAFETY: `user` is the PacketFeed that `decode` passes, alive for the call.
+    let feed = unsafe { &mut *user.cast::<PacketFeed>() };
+    if feed.given {
+        unsafe { packets.as_ptr().write(0) };
+        return NO_MORE_INPUT;
+    }
+    feed.given = true;
+    unsafe { packets.as_ptr().write(1) };
+    let list = unsafe { &mut *list.as_ptr() };
+    list.mNumberBuffers = 1;
+    list.mBuffers[0] = AudioBuffer {
+        mNumberChannels: feed.channels,
+        mDataByteSize: feed.len,
+        mData: feed.data as *mut c_void,
+    };
+    if !descriptions.is_null() {
+        unsafe { descriptions.write(&mut feed.description) };
+    }
+    0
+}
+
+impl OpusDecoder {
+    pub(crate) fn new(channels: u32) -> Result<Self, String> {
+        let input = AudioStreamBasicDescription {
+            mSampleRate: f64::from(AUDIO_RATE),
+            mFormatID: kAudioFormatOpus,
+            mFormatFlags: 0,
+            mBytesPerPacket: 0,
+            mFramesPerPacket: AUDIO_FRAMES,
+            mBytesPerFrame: 0,
+            mChannelsPerFrame: channels,
+            mBitsPerChannel: 0,
+            mReserved: 0,
+        };
+        let output = AudioStreamBasicDescription {
+            mBytesPerPacket: 4 * channels,
+            mBytesPerFrame: 4 * channels,
+            mChannelsPerFrame: channels,
+            ..pcm_format()
+        };
+        let mut converter: AudioConverterRef = std::ptr::null_mut();
+        let status = unsafe {
+            AudioConverterNew(
+                NonNull::from(&input),
+                NonNull::from(&output),
+                NonNull::from(&mut converter),
+            )
+        };
+        if status != 0 || converter.is_null() {
+            return Err(format!("no Opus decoder (AudioConverterNew: {status})"));
+        }
+        Ok(Self {
+            converter,
+            channels,
+            out: vec![0.0; (AUDIO_FRAMES * channels) as usize],
+        })
+    }
+
+    /// One packet's sound, interleaved.
+    pub(crate) fn decode(&mut self, data: &[u8]) -> Result<&[f32], String> {
+        let mut feed = PacketFeed {
+            data: data.as_ptr(),
+            len: data.len() as u32,
+            channels: self.channels,
+            description: AudioStreamPacketDescription {
+                mStartOffset: 0,
+                mVariableFramesInPacket: 0,
+                mDataByteSize: data.len() as u32,
+            },
+            given: false,
+        };
+        let mut list = AudioBufferList {
+            mNumberBuffers: 1,
+            mBuffers: [AudioBuffer {
+                mNumberChannels: self.channels,
+                mDataByteSize: (self.out.len() * 4) as u32,
+                mData: self.out.as_mut_ptr().cast(),
+            }],
+        };
+        // For PCM a packet is a frame.
+        let mut frames = AUDIO_FRAMES;
+        let status = unsafe {
+            AudioConverterFillComplexBuffer(
+                self.converter,
+                Some(feed_packet),
+                (&mut feed as *mut PacketFeed).cast(),
+                NonNull::from(&mut frames),
+                NonNull::from(&mut list),
+                std::ptr::null_mut(),
+            )
+        };
+        if status != 0 && status != NO_MORE_INPUT {
+            return Err(format!("decoding sound: {status}"));
+        }
+        Ok(&self.out[..(frames * self.channels) as usize])
+    }
+}
+
+impl Drop for OpusDecoder {
+    fn drop(&mut self) {
+        unsafe { AudioConverterDispose(self.converter) };
+    }
+}
+
 /// Room for a two-buffer list (planar stereo), which the one-buffer
 /// `AudioBufferList` type can't hold.
 #[repr(C)]
@@ -490,6 +621,115 @@ impl AudioCapture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use aetherdesk_proto::MIC_CHANNELS;
+
+    /// A mono tone through our encoder's settings and the decoder comes
+    /// back as a tone: the microphone's path on the host.
+    #[test]
+    fn decodes_mono_opus() {
+        let input = AudioStreamBasicDescription {
+            mBytesPerPacket: 4,
+            mBytesPerFrame: 4,
+            mChannelsPerFrame: MIC_CHANNELS,
+            ..pcm_format()
+        };
+        let output = AudioStreamBasicDescription {
+            mSampleRate: f64::from(AUDIO_RATE),
+            mFormatID: kAudioFormatOpus,
+            mFormatFlags: 0,
+            mBytesPerPacket: 0,
+            mFramesPerPacket: AUDIO_FRAMES,
+            mBytesPerFrame: 0,
+            mChannelsPerFrame: MIC_CHANNELS,
+            mBitsPerChannel: 0,
+            mReserved: 0,
+        };
+        let mut encoder: AudioConverterRef = std::ptr::null_mut();
+        let status = unsafe {
+            AudioConverterNew(
+                NonNull::from(&input),
+                NonNull::from(&output),
+                NonNull::from(&mut encoder),
+            )
+        };
+        assert_eq!(status, 0);
+        let mut decoder = OpusDecoder::new(MIC_CHANNELS).unwrap();
+        let n = AUDIO_FRAMES as usize;
+        let mut decoded = Vec::new();
+        let mut out = vec![0u8; 4000];
+        for k in 0..50 {
+            let chunk: Vec<f32> = (0..n)
+                .map(|i| {
+                    let t = (k * n + i) as f32 / AUDIO_RATE as f32;
+                    0.3 * (std::f32::consts::TAU * 440.0 * t).sin()
+                })
+                .collect();
+            let mut feed = Feed {
+                data: chunk.as_ptr(),
+                frames: AUDIO_FRAMES,
+            };
+            let mut list = AudioBufferList {
+                mNumberBuffers: 1,
+                mBuffers: [AudioBuffer {
+                    mNumberChannels: MIC_CHANNELS,
+                    mDataByteSize: out.len() as u32,
+                    mData: out.as_mut_ptr().cast(),
+                }],
+            };
+            let mut packets = 1u32;
+            let mut description = AudioStreamPacketDescription {
+                mStartOffset: 0,
+                mVariableFramesInPacket: 0,
+                mDataByteSize: 0,
+            };
+            unsafe {
+                AudioConverterFillComplexBuffer(
+                    encoder,
+                    Some(feed_mono),
+                    (&mut feed as *mut Feed).cast(),
+                    NonNull::from(&mut packets),
+                    NonNull::from(&mut list),
+                    &mut description,
+                )
+            };
+            if packets > 0 {
+                let len = description.mDataByteSize as usize;
+                decoded.extend_from_slice(decoder.decode(&out[..len]).unwrap());
+            }
+        }
+        unsafe { AudioConverterDispose(encoder) };
+        assert!(decoded.len() > 40 * n, "{} frames", decoded.len());
+        let tail = &decoded[decoded.len() / 2..];
+        let rms = (tail.iter().map(|v| v * v).sum::<f32>() / tail.len() as f32).sqrt();
+        assert!((rms - 0.212).abs() < 0.03, "rms {rms}");
+    }
+
+    /// The encoder's input callback, for mono.
+    unsafe extern "C-unwind" fn feed_mono(
+        _converter: AudioConverterRef,
+        packets: NonNull<u32>,
+        list: NonNull<AudioBufferList>,
+        _descriptions: *mut *mut AudioStreamPacketDescription,
+        user: *mut c_void,
+    ) -> i32 {
+        let feed = unsafe { &mut *user.cast::<Feed>() };
+        let take = unsafe { packets.as_ptr().read() }.min(feed.frames);
+        unsafe { packets.as_ptr().write(take) };
+        if take == 0 {
+            return NO_MORE_INPUT;
+        }
+        let list = unsafe { &mut *list.as_ptr() };
+        list.mNumberBuffers = 1;
+        list.mBuffers[0] = AudioBuffer {
+            mNumberChannels: 1,
+            mDataByteSize: take * 4,
+            mData: feed.data as *mut c_void,
+        };
+        feed.data = unsafe { feed.data.add(take as usize) };
+        feed.frames -= take;
+        0
+    }
 
     /// A second of a 440 Hz tone, fed in uneven pieces like
     /// ScreenCaptureKit's, comes out as 100 packets with times 10 ms apart.
