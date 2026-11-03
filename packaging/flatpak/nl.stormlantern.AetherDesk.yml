@@ -71,6 +71,11 @@ modules:
     sources:
       - type: archive
         url: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+        # ffmpeg.org is sometimes unreachable (it timed out in CI); these
+        # carry the same tarball, and the sha256 below checks it.
+        mirror-urls:
+          - https://deb.debian.org/debian/pool/main/f/ffmpeg/ffmpeg_9.0.2.orig.tar.xz
+          - https://ftp.osuosl.org/pub/blfs/conglomeration/ffmpeg/ffmpeg-9.0.2.tar.xz
         sha256: 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
 
   - name: aetherdesk
