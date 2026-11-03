@@ -37,6 +37,7 @@ mod keymap;
 mod lock;
 #[cfg(target_os = "macos")]
 mod mute;
+#[cfg(target_os = "macos")]
 mod output;
 #[cfg(target_os = "macos")]
 mod pasteboard;
@@ -48,6 +49,7 @@ mod record;
 mod serve;
 #[cfg(target_os = "macos")]
 mod session;
+#[cfg(target_os = "macos")]
 mod speaker;
 #[cfg(target_os = "macos")]
 mod stream;
