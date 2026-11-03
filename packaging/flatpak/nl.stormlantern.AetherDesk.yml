@@ -49,7 +49,8 @@ modules:
         commit: 88fee5c37318c991a8762d423530f91681e32e3a
 
   # Just what the client uses: H.264 and HEVC decoding (on the GPU when it
-  # can), and Opus for the sound.
+  # can), Opus for the sound, and libopus (from the runtime) to encode the
+  # microphone.
   - name: ffmpeg
     config-opts:
       - --disable-static
@@ -62,6 +63,8 @@ modules:
       - --disable-everything
       - --enable-decoder=h264,hevc,opus
       - --enable-parser=h264,hevc,opus
+      - --enable-libopus
+      - --enable-encoder=libopus
       - --enable-ffnvcodec
       - --enable-cuda
       - --enable-cuvid
