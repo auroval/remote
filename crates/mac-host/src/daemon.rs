@@ -30,6 +30,7 @@ use crate::ipc::{self, FromAgent, ToAgent};
 use crate::power;
 use crate::serve;
 use crate::session::{self, Admitted};
+use crate::speaker::Speaker;
 use crate::stream::StreamSettings;
 use crate::trust::Store;
 
@@ -87,7 +88,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
 }
 
 async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> anyhow::Result<()> {
-    let agents = Agents::system();
+    // Before the agents: they hear whether the device is served.
+    let agents = Agents::system(crate::speaker::start());
     let listener = bind_socket(socket)?;
     tokio::spawn(accept_agents(listener, agents.clone()));
 
@@ -245,6 +247,8 @@ struct Agent {
     /// The client's connection, when it wants sound: packets go straight
     /// there, never queued behind video.
     sound: Mutex<Option<quinn::Connection>>,
+    /// The AetherDesk device, when the daemon serves it.
+    speaker: Option<Arc<Speaker>>,
 }
 
 /// Who owns the console: [`console_uid`] in the daemon, a stand-in in tests.
@@ -255,13 +259,15 @@ type ConsoleOwner = Arc<dyn Fn() -> Option<u32> + Send + Sync>;
 struct Agents {
     list: Arc<Mutex<Vec<Arc<Agent>>>>,
     console: ConsoleOwner,
+    speaker: Option<Arc<Speaker>>,
 }
 
 impl Agents {
-    fn system() -> Self {
+    fn system(speaker: Option<Arc<Speaker>>) -> Self {
         Self {
             list: Arc::default(),
             console: Arc::new(console_uid),
+            speaker,
         }
     }
 
@@ -350,6 +356,7 @@ async fn agent_connection(id: u64, stream: UnixStream, agents: &Agents) -> anyho
         to,
         client: Mutex::new(None),
         sound: Mutex::new(None),
+        speaker: agents.speaker.clone(),
     });
     println!("agent {id}: uid {}, pid {}", agent.uid, agent.pid);
     agents.list.lock().unwrap().push(agent.clone());
@@ -373,6 +380,14 @@ async fn agent_connection(id: u64, stream: UnixStream, agents: &Agents) -> anyho
             }
             continue;
         }
+        if let FromAgent::SoundViaDevice = msg {
+            let conn = agent.sound.lock().unwrap().clone();
+            if let (Some(speaker), Some(conn)) = (&agent.speaker, conn) {
+                println!("agent {id}: sound via the AetherDesk device");
+                speaker.play_to(id, conn);
+            }
+            continue;
+        }
         let client = agent.client.lock().unwrap().clone();
         let Some(client) = client else {
             continue; // nobody watching, e.g. frames still flushing after Stop
@@ -389,6 +404,9 @@ async fn agent_connection(id: u64, stream: UnixStream, agents: &Agents) -> anyho
     agents.list.lock().unwrap().retain(|a| a.id != id);
     // Dropping the client's sender ends its session.
     agent.client.lock().unwrap().take();
+    if let Some(speaker) = &agent.speaker {
+        speaker.stop(id);
+    }
     writer.abort();
     println!("agent {id}: gone");
     result
@@ -405,6 +423,9 @@ impl Drop for InUse {
     fn drop(&mut self) {
         self.0.client.lock().unwrap().take();
         self.0.sound.lock().unwrap().take();
+        if let Some(speaker) = &self.0.speaker {
+            speaker.stop(self.0.id);
+        }
         let _ = self.0.to.send(ToAgent::Stop);
     }
 }
@@ -432,6 +453,7 @@ fn attach(
             codec,
             view: *view.lock().unwrap(),
             audio: sound.is_some(),
+            speaker: agent.speaker.is_some(),
         })
         .map_err(|_| anyhow!("agent {} went away", agent.id))?;
     Ok(in_use)
@@ -595,7 +617,7 @@ async fn follow_console(mut f: Following) {
                         continue;
                     }
                     // Sent straight to the client by the agent's reader.
-                    Some(FromAgent::Hello { .. } | FromAgent::Audio(_)) => continue,
+                    Some(FromAgent::Hello { .. } | FromAgent::Audio(_) | FromAgent::SoundViaDevice) => continue,
                     Some(FromAgent::Clipboard(text)) => {
                         let _ = f.notices.send(HostControl::Clipboard(text));
                         continue;
@@ -699,6 +721,7 @@ mod tests {
                 let uid = o.load(Ordering::Relaxed);
                 (uid != NOBODY).then_some(uid)
             }),
+            speaker: None,
         };
         (agents, owner)
     }
@@ -713,6 +736,7 @@ mod tests {
             to,
             client: Mutex::new(None),
             sound: Mutex::new(None),
+            speaker: None,
         });
         agents.list.lock().unwrap().push(agent.clone());
         (agent, rx)

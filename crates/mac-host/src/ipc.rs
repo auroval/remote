@@ -15,7 +15,7 @@ pub const SOCKET: &str = "/var/run/aetherdesk/agent.sock";
 
 /// Daemon and agent are one binary, installed together; a different build
 /// on the other end means a half-finished install.
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc7");
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc8");
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ToAgent {
@@ -33,6 +33,10 @@ pub enum ToAgent {
         view: Option<(u32, u32)>,
         /// Send the session's sound too ([`FromAgent::Audio`]).
         audio: bool,
+        /// The daemon serves the AetherDesk audio device: the agent may
+        /// switch the Mac's output to it instead of capturing the sound
+        /// ([`FromAgent::SoundViaDevice`]).
+        speaker: bool,
     },
     /// The client's window changed size.
     ViewSize(u32, u32),
@@ -61,6 +65,9 @@ pub enum FromAgent {
     Frame(VideoFrame),
     /// 10 ms of the session's sound, for the client as it is.
     Audio(AudioPacket),
+    /// The Mac plays to the AetherDesk device now: the daemon sends its
+    /// sound to the client, and no [`FromAgent::Audio`] follows.
+    SoundViaDevice,
     /// Text copied in this session, for the client.
     Clipboard(String),
     /// A message for the client as it is (the pointer's shape and moves).
@@ -105,6 +112,7 @@ mod tests {
                 codec: Codec::Hevc,
                 view: Some((2560, 1400)),
                 audio: true,
+                speaker: true,
             },
             ToAgent::ViewSize(1280, 700),
             ToAgent::Input(InputEvent::Key {

@@ -6,8 +6,9 @@
 #   scripts/mac.zsh serve [args]      build and run the host by hand (aether-agent serve)
 #   scripts/mac.zsh record [args]     record a few seconds of H.264 to a file
 #   scripts/mac.zsh pr <number>       switch to a PR's branch and run doctor
-#   scripts/mac.zsh install           build, sign and install the daemon + agents (asks for sudo;
-#                                     same as aether-agent install)
+#   scripts/mac.zsh install           build, sign and install the daemon + agents and the
+#                                     AetherDesk audio device (asks for sudo; same as
+#                                     aether-agent install)
 #   scripts/mac.zsh uninstall         remove them again (asks for sudo)
 #   scripts/mac.zsh status            are the daemon and agent running? last log lines
 #   scripts/mac.zsh logs              follow the daemon and agent logs
@@ -30,6 +31,8 @@ agent() {
 # so a Homebrew-installed host does the same; this builds it first.
 built() {
   cargo build --quiet --release -p aetherdesk-mac-host
+  # install picks the audio device up from next to the binary.
+  [[ $1 == install ]] && packaging/macos/build-driver.sh target/release > /dev/null
   target/release/aether-agent "$@"
 }
 
@@ -62,6 +65,6 @@ case ${1:-help} in
   install | uninstall | status) built "$1" ;;
   logs) tail -n 20 -F $LOGS/daemon.log $LOGS/agent.log $LOGS/loginwindow.log ;;
   *)
-    sed -n '2,16p' "$self" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$self" | sed 's/^# \{0,1\}//'
     ;;
 esac
