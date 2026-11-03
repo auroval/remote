@@ -38,6 +38,8 @@ mod lock;
 #[cfg(target_os = "macos")]
 mod mute;
 #[cfg(target_os = "macos")]
+mod output;
+#[cfg(target_os = "macos")]
 mod pasteboard;
 #[cfg(target_os = "macos")]
 mod power;
@@ -47,6 +49,8 @@ mod record;
 mod serve;
 #[cfg(target_os = "macos")]
 mod session;
+#[cfg(target_os = "macos")]
+mod speaker;
 #[cfg(target_os = "macos")]
 mod stream;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

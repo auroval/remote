@@ -79,6 +79,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
 
     crate::mute::recover();
+    crate::output::recover();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -94,6 +95,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             _ = term.recv() => {
                 println!("SIGTERM: stopping");
                 crate::mute::recover();
+                crate::output::recover();
                 // Not waiting for the capture to wind down: the session is
                 // going away anyway.
                 std::process::exit(0);
@@ -158,6 +160,9 @@ struct Active {
     /// The Mac's own output, muted while its sound plays on the client.
     /// Unmuted when dropped, after the capture stopped.
     _muted: Option<crate::mute::Muted>,
+    /// The Mac's output, on the AetherDesk device instead: the daemon sends
+    /// its sound. Switched back when dropped.
+    _output: Option<crate::output::Switched>,
 }
 
 impl Active {
@@ -252,6 +257,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                 codec,
                 view,
                 audio,
+                speaker,
             } => {
                 if let Some(a) = active.take() {
                     a.stop();
@@ -261,7 +267,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                     mbps,
                     in_flight: in_flight.max(1) as usize,
                 };
-                match start(&settings, &out, clipboard, codec, view, audio) {
+                match start(&settings, &out, clipboard, codec, view, audio, speaker) {
                     Ok(a) => {
                         println!(
                             "capturing {}x{} for the daemon, {codec}",
@@ -349,6 +355,7 @@ fn start(
     codec: Codec,
     view: Option<(u32, u32)>,
     audio: bool,
+    speaker: bool,
 ) -> anyhow::Result<Active> {
     // Checked again here: the permission may have changed since we started.
     if !CGPreflightPostEventAccess() {
@@ -388,9 +395,22 @@ fn start(
             let _ = out.send(FromAgent::Clipboard(text));
         })
     });
+    // In a user session, with the device installed: the Mac plays to it and
+    // the daemon sends that. The login window keeps capturing: its capture
+    // failing is how a black picture there shows (see serve_daemon).
+    let output = (audio && speaker && user_session)
+        .then(|| {
+            crate::output::switch()
+                .inspect_err(|e| println!("sound: {e}; capturing instead"))
+                .ok()
+        })
+        .flatten();
+    if output.is_some() {
+        let _ = out.send(FromAgent::SoundViaDevice);
+    }
     // No sound (e.g. none at the login window) is no reason to fail.
     let mut sound_error = None;
-    let sound = audio
+    let sound = (audio && output.is_none())
         .then(|| {
             let out = out.clone();
             AudioCapture::start(
@@ -413,6 +433,7 @@ fn start(
         sound,
         sound_error,
         _muted: muted,
+        _output: output,
         injector: stream::spawn_injector(display.bounds, last_move),
         stream,
         pump,

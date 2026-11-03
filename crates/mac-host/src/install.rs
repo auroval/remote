@@ -5,6 +5,11 @@
 //! `aether-agent install` works from wherever the binary is (a Homebrew
 //! cask, a cargo build): it signs a copy, then asks for admin rights for the
 //! part that needs them. `scripts/mac.zsh install` builds and calls this.
+//!
+//! When `AetherDesk.driver` lies next to the binary (the release has it;
+//! `scripts/mac.zsh install` builds it), the AetherDesk audio device is
+//! installed too (#82): coreaudiod loads it from the HAL plug-ins folder,
+//! and the daemon's job declares the Mach service the device looks up.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -12,6 +17,10 @@ use std::process::Command;
 const LABEL: &str = "nl.stormlantern.aetherdesk";
 const DEST: &str = "/Library/Application Support/AetherDesk";
 const LOGS: &str = "/Library/Logs/AetherDesk";
+/// Where coreaudiod finds the AetherDesk audio device.
+const DRIVER: &str = "/Library/Audio/Plug-Ins/HAL/AetherDesk.driver";
+/// The Mach service the device looks up: [`crate::speaker`].
+const SPEAKER_SERVICE: &str = "nl.stormlantern.aetherdesk.audio";
 
 fn bin() -> PathBuf {
     Path::new(DEST).join("aether-agent")
@@ -76,9 +85,18 @@ fn unload(job: &str) {
     eprintln!("warning: {job} is still loaded after 10 s");
 }
 
-fn plist(label: &str, session_type: Option<&str>, log: &str, arg: &str) -> String {
+fn plist(
+    label: &str,
+    session_type: Option<&str>,
+    log: &str,
+    arg: &str,
+    mach_service: Option<&str>,
+) -> String {
     let limit = session_type
         .map(|t| format!("  <key>LimitLoadToSessionType</key><string>{t}</string>\n"))
+        .unwrap_or_default();
+    let service = mach_service
+        .map(|s| format!("  <key>MachServices</key><dict><key>{s}</key><true/></dict>\n"))
         .unwrap_or_default();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -89,7 +107,7 @@ fn plist(label: &str, session_type: Option<&str>, log: &str, arg: &str) -> Strin
     <string>{bin}</string>
     <string>{arg}</string>
   </array>
-{limit}  <key>RunAtLoad</key><true/>
+{limit}{service}  <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ProcessType</key><string>Interactive</string>
   <key>StandardOutPath</key><string>{LOGS}/{log}</string>
@@ -121,6 +139,7 @@ pub fn install(args: &[String]) -> Result<(), String> {
     let staged_s = staged.to_string_lossy().to_string();
     // A cask's download carries the quarantine flag; the copy shouldn't.
     let _ = run("xattr", &["-d", "com.apple.quarantine", &staged_s]);
+    stage_driver(&me, &stage);
 
     // A release build is signed with our Developer ID and notarized: keep
     // that, since permissions stick to it across updates for everyone.
@@ -135,7 +154,8 @@ pub fn install(args: &[String]) -> Result<(), String> {
     let have_identity = Command::new("security")
         .args(["find-identity", "-p", "codesigning"])
         .output()
-        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{identity}\"")));
+        // codesign takes the start of a name too ("Developer ID Application").
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{identity}")));
     let sign_as = if have_identity {
         identity.as_str()
     } else {
@@ -164,6 +184,32 @@ pub fn install(args: &[String]) -> Result<(), String> {
     install_staged(&stage, &staged)
 }
 
+/// Copies the AetherDesk audio device from next to this binary into the
+/// stage, when it's there. It's signed already: by the release with the
+/// Developer ID, by build-driver.sh ad hoc (which coreaudiod accepts).
+fn stage_driver(me: &Path, stage: &Path) {
+    let Some(source) = me
+        .canonicalize()
+        .ok()
+        .and_then(|p| Some(p.parent()?.join("AetherDesk.driver")))
+        .filter(|p| p.is_dir())
+    else {
+        println!(
+            "no AetherDesk.driver next to {}: installing without the audio device (the Mac's \
+             sound is captured instead)",
+            me.display()
+        );
+        return;
+    };
+    let staged = stage.join("AetherDesk.driver");
+    let (src, dst) = (source.to_string_lossy(), staged.to_string_lossy());
+    if let Err(e) = run("ditto", &[&src, &dst]) {
+        eprintln!("warning: not installing the audio device: {e}");
+        return;
+    }
+    let _ = run("xattr", &["-dr", "com.apple.quarantine", &dst]);
+}
+
 /// Whether `path` carries a valid Developer ID Application signature.
 fn developer_id(path: &str) -> bool {
     let valid = Command::new("codesign")
@@ -188,9 +234,14 @@ fn signed_by_developer_id(info: &str) -> bool {
 fn install_staged(stage: &Path, staged: &Path) -> Result<(), String> {
     let staged_s = staged.to_string_lossy().to_string();
     println!("Installing needs admin rights; macOS asks for your password.");
+    let driver = stage.join("AetherDesk.driver");
+    let mut root_args = vec!["_install-root".to_string(), staged_s];
+    if driver.is_dir() {
+        root_args.push(driver.to_string_lossy().into());
+    }
     let status = Command::new("sudo")
         .arg(staged)
-        .args(["_install-root", &staged_s])
+        .args(&root_args)
         .status()
         .map_err(|e| format!("sudo: {e}"))?;
     let _ = std::fs::remove_dir_all(stage);
@@ -222,8 +273,10 @@ fn install_staged(stage: &Path, staged: &Path) -> Result<(), String> {
 /// The root part of `install`: puts the signed copy in place, writes the
 /// launchd jobs and starts the daemon.
 pub fn install_root(args: &[String]) -> Result<(), String> {
-    let [staged] = args else {
-        return Err("_install-root needs the staged binary".into());
+    let (staged, driver) = match args {
+        [staged] => (staged, None),
+        [staged, driver] => (staged, Some(driver)),
+        _ => return Err("_install-root needs the staged binary".into()),
     };
     if uid() != 0 {
         return Err("_install-root runs as root, from install".into());
@@ -247,7 +300,13 @@ pub fn install_root(args: &[String]) -> Result<(), String> {
     let jobs = [
         (
             daemon_plist(),
-            plist(&format!("{LABEL}.daemon"), None, "daemon.log", "daemon"),
+            plist(
+                &format!("{LABEL}.daemon"),
+                None,
+                "daemon.log",
+                "daemon",
+                Some(SPEAKER_SERVICE),
+            ),
         ),
         (
             agent,
@@ -256,6 +315,7 @@ pub fn install_root(args: &[String]) -> Result<(), String> {
                 Some("Aqua"),
                 "agent.log",
                 "agent",
+                None,
             ),
         ),
         (
@@ -265,6 +325,7 @@ pub fn install_root(args: &[String]) -> Result<(), String> {
                 Some("LoginWindow"),
                 "loginwindow.log",
                 "agent",
+                None,
             ),
         ),
     ];
@@ -274,10 +335,41 @@ pub fn install_root(args: &[String]) -> Result<(), String> {
         run("chown", &["root:wheel", &p])?;
         run("chmod", &["644", &p])?;
     }
+    if let Some(driver) = driver {
+        install_driver(Path::new(driver))?;
+    }
     run(
         "launchctl",
         &["bootstrap", "system", &daemon_plist().to_string_lossy()],
     )
+}
+
+/// Puts the audio device in place and restarts coreaudiod to load it; not
+/// when it's unchanged, since the restart cuts the Mac's sound for a moment.
+fn install_driver(staged: &Path) -> Result<(), String> {
+    let files = ["Contents/MacOS/AetherDesk", "Contents/Info.plist"];
+    let unchanged = files.iter().all(|f| {
+        let new = std::fs::read(staged.join(f));
+        new.is_ok() && new.ok() == std::fs::read(Path::new(DRIVER).join(f)).ok()
+    });
+    if unchanged {
+        println!("audio device: unchanged");
+        return Ok(());
+    }
+    let _ = std::fs::remove_dir_all(DRIVER);
+    run("ditto", &[&staged.to_string_lossy(), DRIVER])?;
+    run("chown", &["-R", "root:wheel", DRIVER])?;
+    restart_coreaudio();
+    println!("audio device installed (the Mac's sound paused for a moment)");
+    Ok(())
+}
+
+/// coreaudiod loads and drops plug-ins only when it starts; launchd starts
+/// it again right away.
+fn restart_coreaudio() {
+    if let Err(e) = run("killall", &["coreaudiod"]) {
+        eprintln!("warning: restarting coreaudiod: {e}");
+    }
 }
 
 /// `aether-agent uninstall`, as the user.
@@ -312,6 +404,10 @@ pub fn uninstall_root(_args: &[String]) -> Result<(), String> {
     }
     for dir in [DEST, LOGS, "/var/run/aetherdesk"] {
         let _ = std::fs::remove_dir_all(dir);
+    }
+    if Path::new(DRIVER).exists() {
+        let _ = std::fs::remove_dir_all(DRIVER);
+        restart_coreaudio();
     }
     Ok(())
 }
@@ -357,15 +453,17 @@ mod tests {
 
     #[test]
     fn plists_point_at_the_installed_binary() {
-        let p = plist("x.agent", Some("Aqua"), "agent.log", "agent");
+        let p = plist("x.agent", Some("Aqua"), "agent.log", "agent", None);
         assert!(
             p.contains("<string>/Library/Application Support/AetherDesk/aether-agent</string>")
         );
         assert!(p.contains("<key>LimitLoadToSessionType</key><string>Aqua</string>"));
         assert!(p.contains("<string>/Library/Logs/AetherDesk/agent.log</string>"));
-        let d = plist("x.daemon", None, "daemon.log", "daemon");
+        assert!(!p.contains("MachServices"));
+        let d = plist("x.daemon", None, "daemon.log", "daemon", Some("x.audio"));
         assert!(!d.contains("LimitLoadToSessionType"));
         assert!(d.contains("<string>daemon</string>"));
+        assert!(d.contains("<key>MachServices</key><dict><key>x.audio</key><true/></dict>"));
     }
 
     #[test]

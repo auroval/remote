@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Signs aether-agent with the Developer ID Application certificate (hardened
 # runtime, secure timestamp, the fixed identifier `aether-agent install`
-# keeps) and notarizes it. Fails unless Apple accepts it.
+# keeps) and notarizes it, together with the AetherDesk audio device when
+# given. Fails unless Apple accepts it.
 #
-#   packaging/macos/sign-notarize.sh <path to aether-agent>
+#   packaging/macos/sign-notarize.sh <path to aether-agent> [<AetherDesk.driver>]
 #
 # Signing: the certificate must be in a keychain on the search list.
 # SIGN_IDENTITY picks it (a part of its name; default "Developer ID
@@ -16,7 +17,8 @@
 # SKIP_NOTARIZE=1 signs only, for trying the hardened runtime locally.
 set -euo pipefail
 
-bin=${1:?usage: sign-notarize.sh <path to aether-agent>}
+bin=${1:?usage: sign-notarize.sh <path to aether-agent> [<AetherDesk.driver>]}
+driver=${2:-}
 identity=${SIGN_IDENTITY:-Developer ID Application}
 identifier=nl.stormlantern.aetherdesk.agent
 
@@ -28,6 +30,11 @@ grep -q '^Authority=Developer ID Application' <<<"$info" ||
 	{ echo "not signed with a Developer ID Application certificate"; exit 1; }
 grep -q 'flags=.*runtime' <<<"$info" || { echo "hardened runtime missing"; exit 1; }
 echo "signed: $identifier, hardened runtime"
+if [ -n "$driver" ]; then
+	codesign --force --sign "$identity" --options runtime --timestamp "$driver"
+	codesign --verify --strict --verbose=2 "$driver"
+	echo "signed: $(basename "$driver")"
+fi
 
 if [ -n "${SKIP_NOTARIZE:-}" ]; then
 	echo "not notarized (SKIP_NOTARIZE)"
@@ -46,7 +53,10 @@ fi
 # stapled ticket: Gatekeeper looks the notarization up online instead.
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-ditto -c -k --keepParent "$bin" "$work/aether-agent.zip"
+mkdir "$work/pack"
+cp "$bin" "$work/pack/"
+[ -n "$driver" ] && ditto "$driver" "$work/pack/$(basename "$driver")"
+ditto -c -k "$work/pack" "$work/aether-agent.zip"
 echo "notarizing: waiting for Apple (usually minutes; a new account's first can take an hour or more)"
 [ -n "${NOTARY_PROFILE:-}" ] &&
 	echo "  progress: xcrun notarytool history --keychain-profile $NOTARY_PROFILE"

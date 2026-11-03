@@ -47,7 +47,7 @@ const BITRATE: u32 = 128_000;
 pub type Sink = Box<dyn Fn(AudioPacket) + Send + Sync>;
 
 /// PCM → Opus packets of [`AUDIO_FRAMES`], with capture times.
-struct OpusEncoder {
+pub(crate) struct OpusEncoder {
     converter: AudioConverterRef,
     /// Interleaved stereo waiting to be encoded.
     pending: Vec<f32>,
@@ -113,7 +113,7 @@ fn pcm_format() -> AudioStreamBasicDescription {
 }
 
 impl OpusEncoder {
-    fn new() -> Result<Self, String> {
+    pub(crate) fn new() -> Result<Self, String> {
         let input = pcm_format();
         let output = AudioStreamBasicDescription {
             mSampleRate: f64::from(AUDIO_RATE),
@@ -171,7 +171,7 @@ impl OpusEncoder {
 
     /// Adds `pcm` (interleaved stereo, captured at `at`) and passes every
     /// whole packet to `sink`.
-    fn push(&mut self, pcm: &[f32], at: f64, sink: &Sink) -> Result<(), String> {
+    pub(crate) fn push(&mut self, pcm: &[f32], at: f64, sink: &Sink) -> Result<(), String> {
         let frames = self.pending.len() / AUDIO_CHANNELS as usize;
         let expected = self.pending_at + frames as f64 / f64::from(AUDIO_RATE);
         // The first sound, or after a pause (ScreenCaptureKit sends nothing

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Builds the Mac host (aether-agent, Apple Silicon), signs it and packs it
-# with the licences and INSTALL.md into
+# Builds the Mac host (aether-agent, Apple Silicon) and the AetherDesk audio
+# device (AetherDesk.driver), signs them and packs them with the licences
+# and INSTALL.md into
 # <outdir>/aetherdesk-host-<version>-arm64-macos.tar.gz.
 # Run from the repository root on a Mac (the release workflow does).
 #
@@ -23,8 +24,10 @@ trap 'rm -rf "$stage"' EXIT
 dir=$stage/$name
 mkdir -p "$dir"
 cp "$target/aarch64-apple-darwin/release/aether-agent" "$dir/"
+# Next to the binary: `aether-agent install` installs it from there.
+packaging/macos/build-driver.sh "$dir" > /dev/null
 if [ "${SIGNING:-}" = developer-id ]; then
-	packaging/macos/sign-notarize.sh "$dir/aether-agent"
+	packaging/macos/sign-notarize.sh "$dir/aether-agent" "$dir/AetherDesk.driver"
 else
 	# Ad hoc: `aether-agent install` signs its own copy again, with the
 	# user's identity when they have one.
