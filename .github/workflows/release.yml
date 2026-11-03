@@ -1,7 +1,7 @@
 name: Release
 
-# Pushing a v* tag builds the Linux client and the Mac host and attaches
-# both tarballs (with .sha256) to the GitHub release for that tag, created
+# Pushing a v* tag builds the Linux client (tarball and Flatpak) and the Mac
+# host and attaches them (with .sha256) to the GitHub release for that tag, created
 # as a pre-release if it doesn't exist yet. The Homebrew casks are filled in
 # from those afterwards: see docs/RELEASING.md.
 on:
@@ -66,6 +66,25 @@ jobs:
           docker run --rm -v "$PWD:/w:ro" -v "$PWD/dist:/dist" -w /w \
             -e CARGO_TARGET_DIR=/tmp/target -e VERSION \
             aetherdesk-dev bash -c 'packaging/linux/release-tarball.sh "$VERSION" /dist'
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+
+  linux-flatpak:
+    name: Linux client Flatpak
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install flatpak-builder
+        run: packaging/flatpak/ci-setup.sh
+      - name: Build the bundle
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: packaging/flatpak/build.sh "$VERSION" dist
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}

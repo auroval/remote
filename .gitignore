@@ -2,3 +2,5 @@ target/
 **/*.rs.bk
 .DS_Store
 tgt-rel/
+/flatpak-build/
+/.flatpak-builder/

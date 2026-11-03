@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>nl.stormlantern.AetherDesk</id>
+  <name>AetherDesk</name>
+  <summary>Control a Mac from your Linux desktop</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0 OR MIT</project_license>
+  <developer id="nl.stormlantern">
+    <name>Stormlantern</name>
+  </developer>
+  <description>
+    <p>
+      AetherDesk shows a Mac's screen in a window on Linux (Wayland) and sends
+      your keyboard, mouse, clipboard and the Mac's sound across, over the local
+      network or further. The Mac runs the AetherDesk host, installed separately.
+    </p>
+    <p>
+      This is an alpha. Before the first connection, install the host on the
+      Mac and pair this client with it: run "sudo aether-agent pair" on the Mac,
+      then "aetherdesk pair" on Linux.
+    </p>
+  </description>
+  <launchable type="desktop-id">nl.stormlantern.AetherDesk.desktop</launchable>
+  <url type="homepage">https://github.com/stormlantern-dev/aetherdesk</url>
+  <url type="bugtracker">https://github.com/stormlantern-dev/aetherdesk/issues</url>
+  <url type="vcs-browser">https://github.com/stormlantern-dev/aetherdesk</url>
+  <categories>
+    <category>Network</category>
+    <category>RemoteAccess</category>
+  </categories>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0-alpha.3" date="2026-10-31" type="development"/>
+  </releases>
+</component>

@@ -50,6 +50,9 @@ pub struct LinkView<'a> {
     pub audio: Option<Receiver<aetherdesk_proto::AudioPacket>>,
 }
 
+/// Also the Flatpak ID and the name of the desktop file.
+pub const APP_ID: &str = "nl.stormlantern.AetherDesk";
+
 pub fn run(
     welcome: &Welcome,
     host: &str,
@@ -57,6 +60,8 @@ pub fn run(
     input: UnboundedSender<InputEvent>,
     link: LinkView<'_>,
 ) -> anyhow::Result<()> {
+    // The Wayland app ID: ties the window to its desktop entry and icon.
+    sdl3::hint::set("SDL_APP_ID", APP_ID);
     let sdl = sdl3::init().map_err(|e| anyhow!("SDL: {e}"))?;
     let video = sdl.video().map_err(|e| anyhow!("SDL video: {e}"))?;
     // No sound output is no reason to go without the picture.

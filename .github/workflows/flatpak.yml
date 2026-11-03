@@ -1,0 +1,30 @@
+name: Flatpak
+
+# Builds the client's Flatpak when its packaging changes, so a broken
+# manifest shows up before a release. The release workflow builds it too.
+on:
+  pull_request:
+    paths:
+      - 'packaging/flatpak/**'
+      - 'packaging/linux/**'
+      - '.github/workflows/flatpak.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flatpak:
+    name: flatpak (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install flatpak-builder
+        run: packaging/flatpak/ci-setup.sh
+      - name: Build the bundle
+        run: packaging/flatpak/build.sh "0.0.0-ci" dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: flatpak
+          path: dist/
+          retention-days: 7

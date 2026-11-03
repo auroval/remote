@@ -1,5 +1,6 @@
 //! This client's identity and the hosts it paired with, in
-//! `$XDG_CONFIG_HOME/aetherdesk` (usually `~/.config/aetherdesk`):
+//! `$XDG_CONFIG_HOME/aetherdesk` (usually `~/.config/aetherdesk`; in a
+//! Flatpak always `~/.config/aetherdesk`):
 //!
 //! - `client.cert.der`, `client.key.der`: this client's certificate (key 0600);
 //! - `hosts`: one paired host per line, `<fingerprint> <address> <name>`.
@@ -24,9 +25,15 @@ pub struct Store {
 impl Store {
     /// The user's store.
     pub fn user() -> Result<Self, String> {
+        let home = || std::env::var_os("HOME").map(|h| Path::new(&h).join(".config"));
+        // A Flatpak points XDG_CONFIG_HOME into its sandbox; it may use
+        // ~/.config/aetherdesk instead, so pairings are shared with a
+        // native install.
+        let flatpak = std::env::var_os("FLATPAK_ID").is_some();
         let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+            Some(_) if flatpak => home().ok_or("HOME isn't set")?,
             Some(d) => PathBuf::from(d),
-            None => Path::new(&std::env::var_os("HOME").ok_or("HOME isn't set")?).join(".config"),
+            None => home().ok_or("HOME isn't set")?,
         };
         Ok(Self {
             dir: base.join("aetherdesk"),
