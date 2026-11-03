@@ -258,6 +258,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                 view,
                 audio,
                 speaker,
+                mic,
             } => {
                 if let Some(a) = active.take() {
                     a.stop();
@@ -267,7 +268,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                     mbps,
                     in_flight: in_flight.max(1) as usize,
                 };
-                match start(&settings, &out, clipboard, codec, view, audio, speaker) {
+                match start(&settings, &out, clipboard, codec, view, audio, speaker, mic) {
                     Ok(a) => {
                         println!(
                             "capturing {}x{} for the daemon, {codec}",
@@ -348,6 +349,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
     result
 }
 
+#[expect(clippy::too_many_arguments)]
 fn start(
     settings: &StreamSettings,
     out: &mpsc::UnboundedSender<FromAgent>,
@@ -356,6 +358,7 @@ fn start(
     view: Option<(u32, u32)>,
     audio: bool,
     speaker: bool,
+    mic: bool,
 ) -> anyhow::Result<Active> {
     // Checked again here: the permission may have changed since we started.
     if !CGPreflightPostEventAccess() {
@@ -398,14 +401,14 @@ fn start(
     // In a user session, with the device installed: the Mac plays to it and
     // the daemon sends that. The login window keeps capturing: its capture
     // failing is how a black picture there shows (see serve_daemon).
-    let output = (audio && speaker && user_session)
+    let output = ((audio || mic) && speaker && user_session)
         .then(|| {
-            crate::output::switch()
+            crate::output::switch(audio, mic)
                 .inspect_err(|e| println!("sound: {e}; capturing instead"))
                 .ok()
         })
         .flatten();
-    if output.is_some() {
+    if audio && output.is_some() {
         let _ = out.send(FromAgent::SoundViaDevice);
     }
     // No sound (e.g. none at the login window) is no reason to fail.

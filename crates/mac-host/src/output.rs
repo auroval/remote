@@ -1,7 +1,8 @@
 //! Points the Mac's output at the AetherDesk device for a session (#82), so
 //! what apps play goes to the client and not to the Mac's speakers. Both
-//! the default output and the one for alerts follow; at the end they go
-//! back to what they were, unless the user picked something else meanwhile.
+//! the default output and the one for alerts follow, and the default input
+//! when the client sends its microphone. At the end they go back to what
+//! they were, unless the user picked something else meanwhile.
 //! A marker file covers a crash in between: the next start finds it and
 //! switches back ([`recover`]), as [`crate::mute`] does for muting.
 
@@ -11,9 +12,9 @@ use std::ptr::NonNull;
 use objc2_core_audio::{
     AudioObjectGetPropertyData, AudioObjectID, AudioObjectPropertyAddress,
     AudioObjectPropertySelector, AudioObjectSetPropertyData, kAudioDevicePropertyDeviceUID,
-    kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDefaultSystemOutputDevice,
-    kAudioHardwarePropertyTranslateUIDToDevice, kAudioObjectPropertyElementMain,
-    kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
+    kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDefaultOutputDevice,
+    kAudioHardwarePropertyDefaultSystemOutputDevice, kAudioHardwarePropertyTranslateUIDToDevice,
+    kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
 };
 use objc2_core_foundation::{CFRetained, CFString};
 
@@ -25,6 +26,8 @@ const OUTPUTS: [AudioObjectPropertySelector; 2] = [
     kAudioHardwarePropertyDefaultOutputDevice,
     kAudioHardwarePropertyDefaultSystemOutputDevice,
 ];
+/// And the input, for the microphone.
+const INPUT: AudioObjectPropertySelector = kAudioHardwarePropertyDefaultInputDevice;
 
 fn address(selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
     AudioObjectPropertyAddress {
@@ -122,13 +125,17 @@ pub struct Switched {
     previous: Vec<(AudioObjectPropertySelector, String)>,
 }
 
-/// Makes AetherDesk the Mac's output, or says why not.
-pub fn switch() -> Result<Switched, String> {
+/// Makes AetherDesk the Mac's output and/or input, or says why not.
+pub fn switch(output: bool, input: bool) -> Result<Switched, String> {
     let ours = device(DEVICE_UID).ok_or("no AetherDesk device (plug-in not installed?)")?;
     let mut switched = Switched {
         previous: Vec::new(),
     };
-    for output in OUTPUTS {
+    let wanted = OUTPUTS
+        .iter()
+        .filter(|_| output)
+        .chain(std::iter::once(&INPUT).filter(|_| input));
+    for &output in wanted {
         let Some(was) = current(output) else {
             continue;
         };
@@ -140,12 +147,16 @@ pub fn switch() -> Result<Switched, String> {
         };
         if !set(output, ours) {
             // `switched` drops here and puts back what it changed so far.
-            return Err("switching the Mac's output to AetherDesk failed".into());
+            return Err("switching the Mac's sound to AetherDesk failed".into());
         }
         switched.previous.push((output, was_uid));
     }
     let _ = std::fs::write(marker(), encode(&switched.previous));
-    println!("sound: the Mac plays to AetherDesk for the session");
+    match (output, input) {
+        (true, true) => println!("sound: the Mac plays to and records from AetherDesk"),
+        (true, false) => println!("sound: the Mac plays to AetherDesk for the session"),
+        _ => println!("sound: the Mac records from AetherDesk (the client's microphone)"),
+    }
     Ok(switched)
 }
 
@@ -161,7 +172,7 @@ fn decode(text: &str) -> Vec<(AudioObjectPropertySelector, String)> {
         .filter_map(|l| {
             let (output, uid) = l.split_once(' ')?;
             let output = output.parse().ok()?;
-            OUTPUTS.contains(&output).then(|| (output, uid.to_string()))
+            (OUTPUTS.contains(&output) || output == INPUT).then(|| (output, uid.to_string()))
         })
         .collect()
 }
@@ -181,7 +192,7 @@ fn restore(previous: &[(AudioObjectPropertySelector, String)]) {
         }
     }
     if restored > 0 {
-        println!("sound: the Mac plays to its own output again");
+        println!("sound: the Mac uses its own sound devices again");
     }
 }
 
@@ -216,6 +227,7 @@ mod tests {
         let previous = vec![
             (OUTPUTS[0], "BuiltInSpeakerDevice".to_string()),
             (OUTPUTS[1], "a uid with spaces".to_string()),
+            (INPUT, "BuiltInMicrophoneDevice".to_string()),
         ];
         assert_eq!(decode(&encode(&previous)), previous);
         assert!(decode("garbage\n12 x\n").is_empty());

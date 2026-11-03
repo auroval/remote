@@ -151,6 +151,7 @@ async fn serve(o: &Opts, display: &Display, store: &Store, id: &Identity) -> any
                     clipboard,
                     codec,
                     audio,
+                    ..
                 }) => {
                     println!("{peer}: {} ({}), {codec}", c.name, c.fingerprint.short());
                     let wants = Wants {
@@ -199,6 +200,7 @@ async fn client(
         display.width as u32,
         display.height as u32,
         codec,
+        false,
     )
     .await?;
     let mut video = conn.open_uni().await.context("video stream")?;

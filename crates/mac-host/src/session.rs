@@ -59,6 +59,8 @@ pub enum Admitted {
         codec: Codec,
         /// The client wants the Mac's sound.
         audio: bool,
+        /// The client offers its microphone.
+        mic: bool,
     },
     /// A client paired; nothing more to do on this connection.
     Paired(Client),
@@ -93,6 +95,7 @@ pub async fn admit(
             clipboard,
             codecs,
             audio,
+            mic,
         } => match store.client(&client_fp)? {
             Some(client) => {
                 let Some(codec) = Codec::pick(&codecs, CODECS) else {
@@ -106,6 +109,7 @@ pub async fn admit(
                     clipboard,
                     codec,
                     audio,
+                    mic,
                 })
             }
             None => {
@@ -194,12 +198,14 @@ pub async fn welcome(
     width: u32,
     height: u32,
     codec: Codec,
+    mic: bool,
 ) -> anyhow::Result<()> {
     let welcome = Welcome {
         version: PROTOCOL_VERSION,
         width,
         height,
         codec,
+        mic,
     };
     quic::send(send, &welcome).await?;
     Ok(())

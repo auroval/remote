@@ -15,7 +15,7 @@ pub const SOCKET: &str = "/var/run/aetherdesk/agent.sock";
 
 /// Daemon and agent are one binary, installed together; a different build
 /// on the other end means a half-finished install.
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc8");
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc9");
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ToAgent {
@@ -37,6 +37,9 @@ pub enum ToAgent {
         /// switch the Mac's output to it instead of capturing the sound
         /// ([`FromAgent::SoundViaDevice`]).
         speaker: bool,
+        /// The client sends its microphone to the device: make it the
+        /// Mac's input too.
+        mic: bool,
     },
     /// The client's window changed size.
     ViewSize(u32, u32),
@@ -113,6 +116,7 @@ mod tests {
                 view: Some((2560, 1400)),
                 audio: true,
                 speaker: true,
+                mic: true,
             },
             ToAgent::ViewSize(1280, 700),
             ToAgent::Input(InputEvent::Key {

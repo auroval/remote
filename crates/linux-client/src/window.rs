@@ -48,6 +48,8 @@ pub struct LinkView<'a> {
     pub view: UnboundedSender<(u32, u32)>,
     /// The Mac's sound, when asked for.
     pub audio: Option<Receiver<aetherdesk_proto::AudioPacket>>,
+    /// Our microphone, for the Mac, when asked for and taken.
+    pub mic: Option<UnboundedSender<aetherdesk_proto::AudioPacket>>,
 }
 
 pub fn run(
@@ -68,6 +70,12 @@ pub fn run(
     // Only the test hooks look at it; it plays as long as it lives.
     #[cfg(not(feature = "test-hooks"))]
     let _player = player;
+    // Records as long as it lives; no microphone is no reason to stop.
+    let _recorder = link.mic.and_then(|out| {
+        crate::mic::Recorder::start(&sdl, out)
+            .inspect_err(|e| warn!("no microphone: {e:#}"))
+            .ok()
+    });
     let (w, h) = (welcome.width, welcome.height);
     let title = format!("AetherDesk — {host}");
     let window = video

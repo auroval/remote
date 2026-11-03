@@ -3,7 +3,9 @@
 //! when the device starts; we answer with a memory entry for a ring buffer,
 //! which the plug-in fills with everything played to the device. A thread
 //! here follows the ring, encodes Opus and sends it to the client of the
-//! session that uses the device.
+//! session that uses the device. The other way, the client's microphone
+//! packets are decoded into a second ring, which the device plays as its
+//! input.
 //!
 //! The service is declared in the daemon's launchd job (`MachServices`), so
 //! it exists whenever the daemon does, at the login window too. Only
@@ -15,15 +17,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::audio::{OpusEncoder, Sink};
+use aetherdesk_proto::AudioPacket;
+
+use crate::audio::{OpusDecoder, OpusEncoder, Sink};
 use crate::session;
 
 const SERVICE: &str = "nl.stormlantern.aetherdesk.audio";
 const MAGIC: u32 = 0x4144_4155;
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const RATE: u64 = 48_000;
 const CHANNELS: usize = 2;
 const RING_FRAMES: u64 = 16_384;
+const MIC_CHANNELS: usize = aetherdesk_proto::MIC_CHANNELS as usize;
+const MIC_FRAMES: u64 = 16_384;
 const MSG_HELLO: i32 = 0x4144;
 const MSG_MEMORY: i32 = 0x4145;
 
@@ -39,11 +45,16 @@ struct Shared {
     /// mach_absolute_time() of that write.
     host: AtomicU64,
     cycles: AtomicU64,
-    reserved: [u64; 3],
+    /// Microphone frames written so far; they go at
+    /// `mic[n % MIC_FRAMES]`, after the speaker's ring.
+    mic_written: AtomicU64,
+    reserved: [u64; 2],
 }
 
-const SHARED_BYTES: usize =
-    (size_of::<Shared>() + RING_FRAMES as usize * CHANNELS * 4 + 16_383) & !16_383;
+const SHARED_BYTES: usize = (size_of::<Shared>()
+    + (RING_FRAMES as usize * CHANNELS + MIC_FRAMES as usize * MIC_CHANNELS) * 4
+    + 16_383)
+    & !16_383;
 
 // --- Mach --------------------------------------------------------------
 
@@ -137,13 +148,41 @@ fn coreaudiod_uid() -> Option<u32> {
 
 // --- The speaker -------------------------------------------------------
 
-/// The device's sound, and where it goes.
+/// The device's sound, and where it goes; and the client's microphone.
 pub struct Speaker {
     /// The agent whose session plays to the device, and its client.
     target: Mutex<Option<(u64, quinn::Connection)>>,
+    ring: Ring,
+    /// Decodes the microphone; made with the first packet.
+    mic: Mutex<Option<OpusDecoder>>,
 }
 
 impl Speaker {
+    /// One microphone packet from the client, into the device's input. A
+    /// lost packet is a gap the plug-in fills with silence.
+    pub fn mic(&self, packet: &AudioPacket) {
+        let mut decoder = self.mic.lock().unwrap();
+        if decoder.is_none() {
+            match OpusDecoder::new(MIC_CHANNELS as u32) {
+                Ok(d) => *decoder = Some(d),
+                Err(e) => {
+                    eprintln!("speaker: microphone: {e}");
+                    return;
+                }
+            }
+        }
+        let Some(d) = decoder.as_mut() else { return };
+        match d.decode(&packet.data) {
+            Ok(pcm) => self.ring.write_mic(pcm),
+            Err(e) => eprintln!("speaker: microphone: {e}"),
+        }
+    }
+
+    /// Forgets the decoder: the next session starts fresh.
+    pub fn mic_ended(&self) {
+        self.mic.lock().unwrap().take();
+    }
+
     /// Sends the device's sound to `conn`: agent `agent` switched the
     /// Mac's output to the device for that client.
     pub fn play_to(&self, agent: u64, conn: quinn::Connection) {
@@ -207,11 +246,12 @@ pub fn start() -> Option<Arc<Speaker>> {
         return None;
     }
 
+    // The ring lives as long as the process: never unmapped.
     let speaker = Arc::new(Speaker {
         target: Mutex::default(),
+        ring: Ring(shared),
+        mic: Mutex::default(),
     });
-    // The ring lives as long as the process: never unmapped.
-    let ring = Ring(shared);
     std::thread::Builder::new()
         .name("speaker-service".into())
         .spawn(move || serve(service, entry, audio_uid))
@@ -219,7 +259,7 @@ pub fn start() -> Option<Arc<Speaker>> {
     let s = speaker.clone();
     std::thread::Builder::new()
         .name("speaker-ring".into())
-        .spawn(move || follow(&ring, &s))
+        .spawn(move || follow(&s))
         .ok()?;
     println!("speaker: serving the AetherDesk device on {SERVICE}");
     Some(speaker)
@@ -298,19 +338,40 @@ fn serve(service: Port, entry: Port, audio_uid: u32) {
 
 struct Ring(*mut Shared);
 
-// The plug-in writes, this thread only reads; the header's atomics order it.
+// The plug-in writes the speaker's ring and we read it; we write the
+// microphone's ring (one writer, behind Speaker::mic's lock) and the
+// plug-in reads it. The header's atomics order both.
 unsafe impl Send for Ring {}
+unsafe impl Sync for Ring {}
 
 impl Ring {
     fn header(&self) -> &Shared {
         unsafe { &*self.0 }
     }
 
+    fn data(&self) -> *mut f32 {
+        unsafe { self.0.cast::<u8>().add(size_of::<Shared>()).cast::<f32>() }
+    }
+
     /// Frame `at`'s two samples.
     fn frame(&self, at: u64) -> [f32; 2] {
-        let data = unsafe { self.0.cast::<u8>().add(size_of::<Shared>()).cast::<f32>() };
+        let data = self.data();
         let i = (at % RING_FRAMES) as usize * CHANNELS;
         unsafe { [data.add(i).read_volatile(), data.add(i + 1).read_volatile()] }
+    }
+
+    /// Appends microphone frames for the plug-in.
+    fn write_mic(&self, pcm: &[f32]) {
+        let mic = unsafe { self.data().add(RING_FRAMES as usize * CHANNELS) };
+        let header = self.header();
+        let start = header.mic_written.load(Ordering::Relaxed);
+        for (i, &v) in pcm.iter().enumerate() {
+            let at = (start + i as u64) % MIC_FRAMES;
+            unsafe { mic.add(at as usize).write_volatile(v) };
+        }
+        header
+            .mic_written
+            .store(start + pcm.len() as u64, Ordering::Release);
     }
 }
 
@@ -322,7 +383,8 @@ fn host_seconds(ticks: u64) -> f64 {
 
 /// Follows the ring every 2 ms and passes new frames to the encoder while
 /// a session plays to the device.
-fn follow(ring: &Ring, speaker: &Arc<Speaker>) {
+fn follow(speaker: &Arc<Speaker>) {
+    let ring = &speaker.ring;
     let mut pos = 0u64;
     let mut pcm = Vec::<f32>::new();
     let mut encoder: Option<(u64, OpusEncoder)> = None;
@@ -389,6 +451,6 @@ mod tests {
         assert_eq!(size_of::<Memory>(), 48);
         assert_eq!(std::mem::offset_of!(Memory, bytes), 40);
         assert_eq!(SHARED_BYTES % 16_384, 0);
-        const { assert!(SHARED_BYTES >= 64 + 16_384 * 2 * 4) };
+        const { assert!(SHARED_BYTES >= 64 + 16_384 * 3 * 4) };
     }
 }
