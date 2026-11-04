@@ -29,7 +29,7 @@ aether-agent install
 
 `aether-agent install` asks for your password: it puts the host in `/Library/Application Support/AetherDesk` and starts it, now and at every login (also at the login window, view-only there).
 
-Then, **once**, open System Settings → Privacy & Security and add `/Library/Application Support/AetherDesk/aether-agent` to both **Screen & System Audio Recording** and **Accessibility** (the + button, then Cmd+Shift+G and paste the path). `aether-agent status` shows whether it runs.
+Then, **once**, open System Settings → Privacy & Security and add `/Library/Application Support/AetherDesk/aether-agent` to both **Screen & System Audio Recording** and **Accessibility** (the + button, then Cmd+Shift+G and paste the path). macOS only applies them to a fresh start, so then run `aether-agent restart`. `aether-agent status` shows whether it runs.
 
 ### 2. On Linux
 
@@ -78,7 +78,7 @@ Away from home, connect to the Mac's VPN or Tailscale address: `aetherdesk <addr
 
 ### If it doesn't connect
 
-- `aether-agent status` on the Mac: are the daemon and agent running? Missing permissions show in its log.
+- `aether-agent status` on the Mac: are the daemon and agent running? Missing permissions show in its log; after granting them, `aether-agent restart`.
 - A VPN on a narrow network (some mobile and guest networks): since 0.1.0-alpha.1 that works, but if a connection times out where SSH works, tell us your VPN's MTU.
 - The client keeps a log of its last session in `~/.local/state/aetherdesk/client.log`.
 
@@ -119,6 +119,7 @@ On the Mac, either install the host, so it runs at the login window, on the lock
 
 ```zsh
 scripts/mac.zsh install    # asks for sudo; then grant the installed binary Screen Recording + Accessibility
+scripts/mac.zsh restart    # once, after granting them
 scripts/mac.zsh status
 ```
 

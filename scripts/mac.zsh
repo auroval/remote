@@ -11,6 +11,7 @@
 #                                     aether-agent install)
 #   scripts/mac.zsh uninstall         remove them again (asks for sudo)
 #   scripts/mac.zsh status            are the daemon and agent running? last log lines
+#   scripts/mac.zsh restart           restart your agent (after granting permissions)
 #   scripts/mac.zsh logs              follow the daemon and agent logs
 #   scripts/mac.zsh pair              let a client pair: shows a code for 2 minutes (asks for sudo)
 #   scripts/mac.zsh clients           list paired clients (asks for sudo)
@@ -62,7 +63,7 @@ case ${1:-help} in
     cmd=$1; shift
     sudo "$BIN" "$cmd" "$@"
     ;;
-  install | uninstall | status) built "$1" ;;
+  install | uninstall | status | restart) built "$1" ;;
   logs) tail -n 20 -F $LOGS/daemon.log $LOGS/agent.log $LOGS/loginwindow.log ;;
   *)
     sed -n '2,17p' "$self" | sed 's/^# \{0,1\}//'
