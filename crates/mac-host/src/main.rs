@@ -71,6 +71,7 @@ fn main() {
         Some("install") => install::install(&args[1..]),
         Some("uninstall") => install::uninstall(&args[1..]),
         Some("status") => install::status(&args[1..]),
+        Some("restart") => install::restart(&args[1..]),
         Some("_install-root") => install::install_root(&args[1..]),
         Some("_uninstall-root") => install::uninstall_root(&args[1..]),
         Some("version") | Some("--version") => {
@@ -82,7 +83,7 @@ fn main() {
             Ok(())
         }
         _ => Err(format!(
-            "usage: aether-agent install|uninstall|status|pair|clients|unpair|doctor|daemon|agent|serve|record|version\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
+            "usage: aether-agent install|uninstall|status|restart|pair|clients|unpair|doctor|daemon|agent|serve|record|version\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
             install::USAGE,
             daemon::USAGE,
             admin::USAGE,

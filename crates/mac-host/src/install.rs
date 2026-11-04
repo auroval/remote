@@ -16,6 +16,8 @@ use std::process::Command;
 
 const LABEL: &str = "nl.stormlantern.aetherdesk";
 const DEST: &str = "/Library/Application Support/AetherDesk";
+/// The installed binary: what the permissions are granted to.
+pub const BIN: &str = "/Library/Application Support/AetherDesk/aether-agent";
 const LOGS: &str = "/Library/Logs/AetherDesk";
 /// Where coreaudiod finds the AetherDesk audio device.
 const DRIVER: &str = "/Library/Audio/Plug-Ins/HAL/AetherDesk.driver";
@@ -23,7 +25,7 @@ const DRIVER: &str = "/Library/Audio/Plug-Ins/HAL/AetherDesk.driver";
 const SPEAKER_SERVICE: &str = "nl.stormlantern.aetherdesk.audio";
 
 fn bin() -> PathBuf {
-    Path::new(DEST).join("aether-agent")
+    PathBuf::from(BIN)
 }
 
 fn daemon_plist() -> PathBuf {
@@ -45,6 +47,8 @@ aether-agent install     install (or update) the daemon and agents; asks for
                          $AETHERDESK_IDENTITY (default \"AetherDesk Dev\") when
                          you have one; otherwise ad hoc, and macOS asks for the
                          permissions again after each update.
+aether-agent restart     restart your agent, e.g. after granting it Screen
+                         Recording or Accessibility (no password needed)
 aether-agent uninstall   remove them again (pairings included)
 aether-agent status      are the daemon and your agent running? last log lines";
 
@@ -264,7 +268,7 @@ fn install_staged(stage: &Path, staged: &Path) -> Result<(), String> {
     println!(
         "\nInstalled. Once, grant {}\nboth Screen Recording and Accessibility in System \
          Settings → Privacy & Security (+ button, then Cmd+Shift+G and paste the path), then \
-         run: aether-agent status\nTo let a client in: sudo aether-agent pair",
+         run: aether-agent restart\nTo let a client in: sudo aether-agent pair",
         bin().display()
     );
     Ok(())
@@ -409,6 +413,17 @@ pub fn uninstall_root(_args: &[String]) -> Result<(), String> {
         let _ = std::fs::remove_dir_all(DRIVER);
         restart_coreaudio();
     }
+    Ok(())
+}
+
+/// `aether-agent restart`: restarts the user's agent, so a permission
+/// granted after it started takes effect. The login window's agent starts
+/// afresh at every logout, so it picks the permissions up by itself.
+pub fn restart(_args: &[String]) -> Result<(), String> {
+    let job = format!("gui/{}/{LABEL}.agent", uid());
+    run("launchctl", &["kickstart", "-k", &job])
+        .map_err(|e| format!("{e}\nIs the host installed? Run: aether-agent install"))?;
+    println!("Restarted your agent. Check it with: aether-agent status");
     Ok(())
 }
 

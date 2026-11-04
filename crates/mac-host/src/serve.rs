@@ -83,28 +83,39 @@ pub fn parse(
 /// Checks Screen Recording and Accessibility for this process, asking macOS
 /// to show the prompt when one is missing. Without Screen Recording there is
 /// nothing to stream; without Accessibility only input is lost.
-pub fn check_permissions(who: &str) -> Result<(), String> {
-    if !CGPreflightScreenCaptureAccess() {
+/// `then` says how to restart after granting: macOS only applies a new
+/// permission to a process that starts after it.
+pub fn check_permissions(who: &str, then: &str) -> Result<(), String> {
+    // Both checked (and both prompts asked for) before reporting, so a
+    // missing Screen Recording doesn't hide a missing Accessibility.
+    let screen = CGPreflightScreenCaptureAccess();
+    let input = CGPreflightPostEventAccess();
+    if !screen {
         CGRequestScreenCaptureAccess();
-        return Err(format!(
-            "no Screen Recording permission. Grant it to {who} in System Settings → \
-             Privacy & Security → Screen & System Audio Recording, then restart it."
-        ));
     }
-    if !CGPreflightPostEventAccess() {
+    if !input {
         CGRequestPostEventAccess();
         eprintln!(
             "warning: no Accessibility permission, so keyboard and mouse from the client \
              won't work. Grant it to {who} in System Settings → Privacy & Security → \
-             Accessibility, then restart it.\n"
+             Accessibility, then {then}.\n"
         );
+    }
+    if !screen {
+        return Err(format!(
+            "no Screen Recording permission. Grant it to {who} in System Settings → \
+             Privacy & Security → Screen & System Audio Recording, then {then}."
+        ));
     }
     Ok(())
 }
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let o = parse(args, USAGE, |_, _| Ok(false))?;
-    check_permissions("the app you run this from (e.g. your terminal)")?;
+    check_permissions(
+        "the app you run this from (e.g. your terminal)",
+        "restart that app",
+    )?;
     let store = Store::serve()?;
     let id = store
         .identity()
