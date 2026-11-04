@@ -39,13 +39,17 @@ System-wide: the same commands with `sudo` and `/usr/local/bin`,
 
 ## First run
 
-Pair with your Mac once (run `scripts/mac.zsh pair` on the Mac for the code),
-then connect:
+Pair with your Mac once: run `sudo aether-agent pair` on the Mac for the
+code, then type it in here. `aetherdesk pair` finds the Mac on the LAN; over a
+VPN, give its address (`aetherdesk pair <mac-ip>`). Then connect:
 
 ```sh
-aetherdesk pair <mac-ip>
+aetherdesk pair
 aetherdesk
 ```
+
+`aetherdesk --mic` also sends this microphone to the Mac (it needs an ffmpeg
+with libopus, as Arch's has). `aetherdesk --help` lists the other options.
 
 AetherDesk also appears in your app launcher. Your identity and paired Macs
 live in `~/.config/aetherdesk/`.

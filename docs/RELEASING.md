@@ -48,7 +48,8 @@ Pushing the tag and merging the tap PR publish: both are the maintainer's call.
   survive updates. The `.app` bundle, a `.pkg` and the "Remote Desktop"
   entitlement: #28.
 - **Linux:** the client is linked against current Arch's SDL3 and FFmpeg, so
-  it runs on an up-to-date Arch or CachyOS. AUR packages and a Flatpak: #37.
+  it runs on an up-to-date Arch or CachyOS. Anywhere else: the Flatpak bundle
+  from the release. AUR packages: #37.
 
 ## Signing the Mac host
 

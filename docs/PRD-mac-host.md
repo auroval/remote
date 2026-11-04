@@ -21,7 +21,7 @@ A Mac (the host) runs a root daemon plus an agent in each GUI session. A Linux c
 - **Logging in from the login window.** Since macOS 26.6.2 the login window ignores synthetic input from both a LoginWindow agent and a root daemon ([#3](https://github.com/stormlantern-dev/aetherdesk/issues/3)). The login window is view-only; macOS Screen Sharing remains the way in from there.
 - **Headless Macs, virtual displays, several displays.** The main display is captured at its own size.
 - **Internet access without a VPN.** No NAT traversal, no relay. LAN, Tailscale or WireGuard.
-- **File transfer, images on the clipboard.** Audio was a separate idea and is now built on its own track ([#29](https://github.com/stormlantern-dev/aetherdesk/issues/29)): the Mac's sound to the client, not a microphone back.
+- **File transfer, images on the clipboard.** Audio was a separate idea and is now built on its own track: the Mac's sound to the client ([#29](https://github.com/stormlantern-dev/aetherdesk/issues/29)), and through the AetherDesk audio device also the client's microphone to the Mac ([#82](https://github.com/stormlantern-dev/aetherdesk/issues/82)).
 - **Other clients.** The client is Linux only here; a Mac client belongs to the [reverse direction](PRD-linux-host.md).
 
 ## Constraints, with receipts
