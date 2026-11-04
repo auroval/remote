@@ -37,6 +37,7 @@ cask "aetherdesk-host" do
         "/Library/LaunchAgents/nl.stormlantern.aetherdesk.loginwindow.plist",
         "/Library/Application Support/AetherDesk",
         "/Library/Logs/AetherDesk",
+        "/Library/Audio/Plug-Ins/HAL/AetherDesk.driver",
       ]
 
   caveats <<~EOS
@@ -45,8 +46,10 @@ cask "aetherdesk-host" do
       aether-agent install
     Then, once, grant Screen Recording and Accessibility to
       /Library/Application Support/AetherDesk/aether-agent
-    in System Settings → Privacy & Security. Releases are signed with a
-    Developer ID and notarized, so these stay granted across updates.
+    in System Settings → Privacy & Security, then restart the agent:
+      aether-agent restart
+    Releases are signed with a Developer ID and notarized, so these stay
+    granted across updates.
 
     Let a client pair:   sudo aether-agent pair
     Remove it all:       aether-agent uninstall

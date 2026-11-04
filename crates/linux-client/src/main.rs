@@ -65,7 +65,7 @@ usage: aetherdesk [HOST] [--no-clipboard] [--no-audio] [--mic] [--video FORMAT] 
            none). $AETHERDESK_AUDIO_MS sets its buffer (default 30). --mic
            sends this microphone to the Mac, as the input of its AetherDesk
            sound device (an installed host; pick it in calls). --video asks
-           for a video format: hevc444 (sharpest), hevc (~14 ms less delay)
+           for a video format: hevc444 (sharpest), hevc (4:2:0, less data)
            or h264. Default: the best the GPU decodes, else h264.
            --host-key sets the key that releases (and grabs) keyboard and
            mouse: an SDL key name such as RightCtrl (default), RightAlt,

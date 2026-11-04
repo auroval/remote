@@ -14,13 +14,30 @@ Then, as yourself (not with sudo; it asks for your password):
 aether-agent install
 ```
 
-This copies the binary to `/Library/Application Support/AetherDesk` and
-starts a daemon and an agent per session. Once, grant that copy **Screen
-Recording** and **Accessibility** in System Settings → Privacy & Security
-(+ button, then Cmd+Shift+G and paste
-`/Library/Application Support/AetherDesk/aether-agent`).
+This copies the binary to `/Library/Application Support/AetherDesk`, starts
+a daemon and an agent per session, and adds an audio device, **AetherDesk**
+(the Mac's sound pauses for a moment while it loads).
 
-`aether-agent status` shows whether it runs.
+Once, grant that copy **Screen Recording** and **Accessibility** in System
+Settings → Privacy & Security (+ button, then Cmd+Shift+G and paste
+`/Library/Application Support/AetherDesk/aether-agent`). macOS only applies
+them to a fresh start, so then:
+
+```sh
+aether-agent restart
+```
+
+`aether-agent status` shows whether it runs; a missing permission shows in
+its log.
+
+## Sound
+
+During a session the Mac plays to the AetherDesk device, so its sound comes
+out on Linux and the Mac stays quiet. Apps with their own speaker setting
+(Teams, Zoom) can pick AetherDesk too. The Mac's volume keys do nothing
+meanwhile; use the volume on Linux. With `aetherdesk --mic` on Linux,
+AetherDesk is also the Mac's microphone for the session. Afterwards the Mac's
+own devices are back.
 
 ## Pair a client
 
@@ -45,5 +62,5 @@ ad hoc signed alpha, macOS asks for them once more.)
 aether-agent uninstall
 ```
 
-removes the daemon, agents, logs and pairings. The entries in Privacy &
+removes the daemon, agents, audio device, logs and pairings. The entries in Privacy &
 Security stay until you remove them there.
