@@ -164,6 +164,8 @@ While connected, text copied on either side can be pasted on the other (up to 1 
 
 The Mac's sound plays on Linux (Opus, 48 kHz stereo, about 30 ms of buffer; more with `AETHERDESK_AUDIO_MS=60` on a jittery network). The installed host adds an audio device, **AetherDesk**, and makes it the Mac's output during a session: the Mac stays quiet, apps with their own speaker setting (Teams) can pick AetherDesk too, and muting the Mac doesn't silence Linux. The Mac's volume keys do nothing meanwhile; use the volume on Linux. At the login window, and with `serve`, the host captures the sound instead (covered by Screen & System Audio Recording) and mutes the Mac. `aetherdesk --no-audio` turns sound off; the Mac then keeps its own output. `aetherdesk --mic` also sends this microphone to the Mac: during the session AetherDesk is the Mac's input too, so a call on the Mac (pick AetherDesk, or the system default) hears you and can cancel its own echo. It needs the installed host and an FFmpeg with libopus.
 
+While a client is connected, the Mac shows it: an orange border round the screen for a few seconds, then a small badge with the client's name in the top right corner, for whoever sits at the Mac. Clicks pass through it, and the client's picture doesn't include it. (Not at the login window.)
+
 When a session ends, the installed host locks the Mac: right away when you close the client, after 30 s when the link died (so a Wi-Fi hiccup doesn't cost you your password).
 
 Pairing stores each side's certificate on the other; after that only paired machines get in, and the client only talks to the Mac it paired with. `aetherdesk hosts` and `scripts/mac.zsh clients` list them; `unpair` on either side forgets one.

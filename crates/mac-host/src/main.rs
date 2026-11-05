@@ -24,6 +24,8 @@ mod daemon;
 #[cfg(target_os = "macos")]
 mod encoder;
 #[cfg(target_os = "macos")]
+mod indicator;
+#[cfg(target_os = "macos")]
 mod inject;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod input;
@@ -74,6 +76,7 @@ fn main() {
         Some("restart") => install::restart(&args[1..]),
         Some("_install-root") => install::install_root(&args[1..]),
         Some("_uninstall-root") => install::uninstall_root(&args[1..]),
+        Some("_indicator") => indicator::run(&args[1..]),
         Some("version") | Some("--version") => {
             println!(
                 "aether-agent {} (protocol v{})",

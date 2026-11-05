@@ -156,6 +156,8 @@ struct Active {
     pasteboard: Option<pasteboard::Watcher>,
     /// Sends the pointer's shape, when the client draws it.
     _pointer: Option<cursor::Watcher>,
+    /// The on-screen sign of the session; dropped with it.
+    _indicator: Option<crate::indicator::Indicator>,
     /// The session's sound, when the client wants it.
     sound: Option<AudioCapture>,
     /// Why sound didn't start, when it was asked for.
@@ -262,6 +264,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                 audio,
                 speaker,
                 mic,
+                client,
             } => {
                 if let Some(a) = active.take() {
                     a.stop();
@@ -271,7 +274,9 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                     mbps,
                     in_flight: in_flight.max(1) as usize,
                 };
-                match start(&settings, &out, clipboard, codec, view, audio, speaker, mic) {
+                match start(
+                    &settings, &out, clipboard, codec, view, audio, speaker, mic, &client,
+                ) {
                     Ok(a) => {
                         println!(
                             "capturing {}x{} for the daemon, {codec}",
@@ -362,15 +367,27 @@ fn start(
     audio: bool,
     speaker: bool,
     mic: bool,
+    client: &str,
 ) -> anyhow::Result<Active> {
     // Checked again here: the permission may have changed since we started.
     if !CGPreflightPostEventAccess() {
         println!("warning: no Accessibility permission now; input won't work");
     }
+    let user_session = unsafe { libc::getuid() } != 0;
+    // Before the capture starts, so it can leave the indicator out. Not at
+    // the login window: nobody is logged in to see it, and the agent there
+    // runs as root outside a user's session.
+    let indicator = user_session
+        .then(|| {
+            crate::indicator::Indicator::start(client)
+                .inspect(|_| println!("indicator: shown for {client}"))
+                .inspect_err(|e| eprintln!("indicator: {e}"))
+                .ok()
+        })
+        .flatten();
     let display = wait_for_display()?;
     // The pointer goes to the client separately where its shape can be read
     // (not at the login window); otherwise it stays in the video.
-    let user_session = unsafe { libc::getuid() } != 0;
     let local_pointer = user_session && cursor::available();
     let size = picture_size((display.width as u32, display.height as u32), view);
     let (stream, pump) = spawn_stream(&display, size, settings, !local_pointer, codec, out)?;
@@ -450,6 +467,7 @@ fn start(
         inputs: 0,
         pasteboard,
         _pointer: pointer,
+        _indicator: indicator,
     })
 }
 
