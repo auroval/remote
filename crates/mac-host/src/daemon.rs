@@ -162,6 +162,7 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
                         println!("  the client is back: not locking");
                     }
                     let wants = Wants {
+                        client: c.name.clone(),
                         clipboard,
                         codec,
                         audio,
@@ -448,6 +449,7 @@ fn attach(
     view: &View,
     sound: Option<&quinn::Connection>,
     mic: bool,
+    client: &str,
 ) -> anyhow::Result<InUse> {
     *agent.client.lock().unwrap() = Some(tx.clone());
     *agent.sound.lock().unwrap() = sound.cloned();
@@ -462,6 +464,7 @@ fn attach(
             codec,
             view: *view.lock().unwrap(),
             audio: sound.is_some(),
+            client: client.into(),
             speaker: agent.speaker.is_some(),
             mic,
         })
@@ -478,8 +481,10 @@ fn kind(agent: &Agent) -> SessionKind {
 }
 
 /// What the client asked for.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Wants {
+    /// The client's name, shown on the Mac while it's connected.
+    client: String,
     clipboard: bool,
     codec: Codec,
     audio: bool,
@@ -495,6 +500,7 @@ async fn client(
     wants: Wants,
 ) -> anyhow::Result<()> {
     let Wants {
+        client,
         clipboard,
         codec,
         audio,
@@ -518,7 +524,17 @@ async fn client(
     // The client's window size, as last said; a new agent starts at it.
     let view: View = Arc::default();
     let sound = audio.then(|| conn.clone());
-    let in_use = attach(&agent, &tx, s, clipboard, codec, &view, sound.as_ref(), mic)?;
+    let in_use = attach(
+        &agent,
+        &tx,
+        s,
+        clipboard,
+        codec,
+        &view,
+        sound.as_ref(),
+        mic,
+        &client,
+    )?;
 
     let (width, height) = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -600,6 +616,7 @@ async fn client(
         frames: frames_tx,
         sound,
         mic,
+        client,
     }));
     let result = session::send_frames(conn, &mut video, &mut frames, None).await;
     control.abort();
@@ -629,6 +646,8 @@ struct Following {
     sound: Option<quinn::Connection>,
     /// The client sends its microphone.
     mic: bool,
+    /// The client's name.
+    client: String,
 }
 
 /// Relays the current agent's frames, and switches to the agent of the new
@@ -692,6 +711,7 @@ async fn follow_console(mut f: Following) {
                             &f.view,
                             f.sound.as_ref(),
                             f.mic,
+                            &f.client,
                         ) {
                             Ok(in_use) => {
                                 f.in_use = in_use; // drops the old one: Stop
@@ -835,6 +855,7 @@ mod tests {
             &view,
             None,
             false,
+            "test",
         )
         .unwrap();
         let current = Arc::new(Mutex::new(agent));
@@ -854,6 +875,7 @@ mod tests {
             frames: frames_tx,
             sound: None,
             mic: false,
+            client: "test".into(),
         }));
         Session {
             frames,

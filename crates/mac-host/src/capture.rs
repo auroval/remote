@@ -2,7 +2,7 @@
 //! as NV12 pixel buffers on a private dispatch queue and go straight into the
 //! encoder there, so pixel data never crosses into Rust threads.
 
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
 use block2::RcBlock;
@@ -17,8 +17,8 @@ use objc2_core_video::{
 };
 use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol};
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCDisplay, SCShareableContent, SCStream, SCStreamConfiguration,
-    SCStreamDelegate, SCStreamOutput, SCStreamOutputType, SCWindow,
+    SCContentFilter, SCDisplay, SCRunningApplication, SCShareableContent, SCStream,
+    SCStreamConfiguration, SCStreamDelegate, SCStreamOutput, SCStreamOutputType, SCWindow,
 };
 
 use crate::encoder::{Encoder, EncoderOutput};
@@ -47,8 +47,22 @@ pub struct Display {
     pub bounds: Rect,
 }
 
-/// The main display, with its size in pixels.
-pub fn main_display() -> Result<Display, String> {
+/// Processes whose windows every capture leaves out: our own on-screen
+/// indicator ([`crate::indicator`]).
+static EXCLUDED: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+/// Leaves `pid`'s windows out of captures started from now on.
+pub fn exclude_process(pid: i32) {
+    EXCLUDED.lock().unwrap().push(pid);
+}
+
+/// Undoes [`exclude_process`].
+pub fn include_process(pid: i32) {
+    EXCLUDED.lock().unwrap().retain(|p| *p != pid);
+}
+
+/// What can be captured right now: displays, windows and their apps.
+fn shareable_content() -> Result<Retained<SCShareableContent>, String> {
     let (tx, rx) = mpsc::channel();
     let block = RcBlock::new(move |content: *mut SCShareableContent, err: *mut NSError| {
         let res = match unsafe { Retained::retain(content) } {
@@ -58,11 +72,16 @@ pub fn main_display() -> Result<Display, String> {
         let _ = tx.send(res);
     });
     unsafe { SCShareableContent::getShareableContentWithCompletionHandler(&block) };
-    let content = match rx.recv_timeout(TIMEOUT) {
-        Ok(Ok(c)) => c.0,
-        Ok(Err(e)) => return Err(format!("listing displays: {e}")),
-        Err(_) => return Err("listing displays timed out".into()),
-    };
+    match rx.recv_timeout(TIMEOUT) {
+        Ok(Ok(c)) => Ok(c.0),
+        Ok(Err(e)) => Err(format!("listing displays: {e}")),
+        Err(_) => Err("listing displays timed out".into()),
+    }
+}
+
+/// The main display, with its size in pixels.
+pub fn main_display() -> Result<Display, String> {
+    let content = shareable_content()?;
     let display = unsafe { content.displays() }
         .firstObject()
         .ok_or("no displays")?;
@@ -139,6 +158,41 @@ impl StreamOutput {
     }
 }
 
+/// The whole display, minus the processes in [`EXCLUDED`]. Leaving out an
+/// application covers the windows it opens later too.
+fn filter(display: &Display) -> Result<Retained<SCContentFilter>, String> {
+    let excluded = EXCLUDED.lock().unwrap().clone();
+    if excluded.is_empty() {
+        return Ok(unsafe {
+            SCContentFilter::initWithDisplay_excludingWindows(
+                SCContentFilter::alloc(),
+                &display.display,
+                &NSArray::<SCWindow>::new(),
+            )
+        });
+    }
+    let content = shareable_content()?;
+    let apps: Vec<Retained<SCRunningApplication>> = unsafe { content.applications() }
+        .iter()
+        .filter(|a| excluded.contains(&unsafe { a.processID() }))
+        .collect();
+    if apps.len() < excluded.len() {
+        println!(
+            "capture: {} of {} processes to leave out not found",
+            excluded.len() - apps.len(),
+            excluded.len()
+        );
+    }
+    Ok(unsafe {
+        SCContentFilter::initWithDisplay_excludingApplications_exceptingWindows(
+            SCContentFilter::alloc(),
+            &display.display,
+            &NSArray::from_retained_slice(&apps),
+            &NSArray::<SCWindow>::new(),
+        )
+    })
+}
+
 pub struct Capture {
     stream: Retained<SCStream>,
     output: Retained<StreamOutput>,
@@ -159,13 +213,7 @@ impl Capture {
         shows_cursor: bool,
         full_color: bool,
     ) -> Result<Self, String> {
-        let filter = unsafe {
-            SCContentFilter::initWithDisplay_excludingWindows(
-                SCContentFilter::alloc(),
-                &display.display,
-                &NSArray::<SCWindow>::new(),
-            )
-        };
+        let filter = filter(display)?;
         let config = unsafe { SCStreamConfiguration::new() };
         unsafe {
             // ScreenCaptureKit scales to this on the GPU.
