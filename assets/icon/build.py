@@ -135,8 +135,8 @@ def social_svg(icon_png: bytes):
 <image x="120" y="170" width="300" height="300" href="data:image/png;base64,{b64}"/>
 <text x="470" y="300" font-family="Inter, sans-serif" font-weight="600" font-size="100"
       fill="#eef2ff" letter-spacing="-3">AetherDesk</text>
-<text x="474" y="372" font-family="Inter, sans-serif" font-size="38" fill="#b9c3e6">Use your Mac from Linux.</text>
-<text x="474" y="430" font-family="Inter, sans-serif" font-size="28" fill="#7f8ab3">macOS host · Wayland client · Rust</text>
+<text x="474" y="372" font-family="Inter, sans-serif" font-size="38" fill="#b9c3e6">Remote desktop for macOS and Linux.</text>
+<text x="474" y="430" font-family="Inter, sans-serif" font-size="28" fill="#7f8ab3">Wayland-native · GPU streaming · Rust</text>
 </svg>
 """
 

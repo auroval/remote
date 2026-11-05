@@ -12,7 +12,7 @@
   <a href="https://github.com/stormlantern-dev/aetherdesk/actions/workflows/ci.yml"><img src="https://github.com/stormlantern-dev/aetherdesk/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://github.com/stormlantern-dev/aetherdesk/releases"><img src="https://img.shields.io/github/v/release/stormlantern-dev/aetherdesk?include_prereleases&sort=semver&label=release" alt="Latest release"></a>
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue" alt="License: MIT or Apache-2.0"></a>
-  <img src="https://img.shields.io/badge/platform-macOS%20host%20%C2%B7%20Linux%20client-555" alt="Platforms: macOS host, Linux client">
+  <img src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux-555" alt="Platforms: macOS and Linux">
   <a href="https://github.com/stormlantern-dev/homebrew-tap"><img src="https://img.shields.io/badge/homebrew-stormlantern--dev%2Ftap-orange" alt="Homebrew tap"></a>
 </p>
 
