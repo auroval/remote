@@ -17,8 +17,52 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # Which jobs a pull request needs, from the files it changes. A job left
+  # out shows as skipped, which counts as passed for the required checks; a
+  # `paths:` filter on the workflow would leave them pending instead. Pushes
+  # to main run everything.
+  changes:
+    name: changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      linux: ${{ steps.filter.outputs.linux }}
+      macos: ${{ steps.filter.outputs.macos }}
+      spike: ${{ steps.filter.outputs.spike }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          shared='Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$'
+          declare -A patterns=(
+            [linux]="^(crates/|assets/|\.devcontainer/|scripts/e2e-fake-host\.sh$|$shared)"
+            [macos]="^(crates/|assets/|packaging/macos/|$shared)"
+            [spike]="^(spikes/m0/|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)"
+          )
+          # Everything runs unless the diff is known: a failure here must
+          # not turn into skipped (= passed) checks.
+          all=true
+          if [ "$EVENT" = pull_request ] && files=$(git diff --name-only "$BASE...$HEAD"); then
+            all=false
+            echo "$files"
+          fi
+          for job in "${!patterns[@]}"; do
+            if $all || grep -qE "${patterns[$job]}" <<<"$files"; then
+              echo "$job=true" >> "$GITHUB_OUTPUT"; echo "$job: runs"
+            else
+              echo "$job=false" >> "$GITHUB_OUTPUT"; echo "$job: skipped"
+            fi
+          done
+
   workspace-linux:
     name: workspace (Linux)
+    needs: changes
+    if: needs.changes.outputs.linux == 'true'
     # In the devcontainer image: the client needs ffmpeg 9 and SDL3.
     runs-on: ubuntu-latest
     steps:
@@ -47,6 +91,8 @@ jobs:
 
   workspace-macos:
     name: workspace (macOS)
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -60,6 +106,8 @@ jobs:
 
   spike-m0:
     name: spike-m0 (macOS)
+    needs: changes
+    if: needs.changes.outputs.spike == 'true'
     runs-on: macos-latest
     defaults:
       run:
