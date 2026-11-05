@@ -18,10 +18,9 @@ cask "aetherdesk-host" do
 
   binary "aetherdesk-host-#{version}-arm64-macos/aether-agent"
 
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{staged_path}/aetherdesk-host-#{version}-arm64-macos/aether-agent"]
-  end
+  # No postflight: the binary is notarized, so Gatekeeper runs it with the
+  # quarantine flag, and `aether-agent install` drops the flag from the copy
+  # it installs. (Homebrew deprecated Ruby flight blocks in taps.)
 
   # Not on upgrade: brew runs `uninstall` for every upgrade, and that would
   # take the running host and its pairings down. `aether-agent uninstall`
