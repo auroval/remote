@@ -131,6 +131,7 @@ define_class!(
             }
             // Frames without an image are "nothing changed" ticks.
             let Some(image) = (unsafe { sample.image_buffer() }) else {
+                self.ivars().encoder.idle();
                 return;
             };
             let pts = unsafe { sample.presentation_time_stamp() };
@@ -226,7 +227,7 @@ impl Capture {
             } else {
                 kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
             });
-            config.setMinimumFrameInterval(CMTime::new(1, fps as i32));
+            config.setMinimumFrameInterval(CMTime::new(frame_interval_us(fps), 1_000_000));
             config.setQueueDepth(5);
             config.setShowsCursor(shows_cursor);
         }
@@ -269,6 +270,38 @@ impl Capture {
     }
 }
 
+/// Set to a number of microseconds, the shortest time between two captures,
+/// overriding [`default_interval_us`]; 0 captures every refresh.
+pub const INTERVAL_ENV: &str = "AETHERDESK_CAPTURE_INTERVAL_US";
+
+/// The shortest time between two captures at `fps`: 90 % of a frame, not a
+/// whole one. The built-in display refreshes at 120 Hz, and with exactly 1/60 s
+/// a tick that comes a hair early is passed over, leaving a 25 ms gap (#109).
+/// At 90 % every second 120 Hz tick still qualifies, so a 60 Hz stream gets
+/// one capture per frame.
+fn default_interval_us(fps: u32) -> i64 {
+    1_000_000 * 9 / (10 * i64::from(fps.max(1)))
+}
+
+/// The minimum frame interval for `fps`, in microseconds; see [`INTERVAL_ENV`].
+fn frame_interval_us(fps: u32) -> i64 {
+    let default = default_interval_us(fps);
+    match std::env::var(INTERVAL_ENV)
+        .ok()
+        .map(|v| v.trim().parse::<i64>())
+    {
+        None => default,
+        Some(Ok(us)) if us >= 0 => {
+            println!("capture: at least {us} µs between frames ({INTERVAL_ENV})");
+            us
+        }
+        Some(_) => {
+            eprintln!("{INTERVAL_ENV}: not a number of microseconds; using {default}");
+            default
+        }
+    }
+}
+
 /// Calls `start` with a completion block and waits for it.
 pub(crate) fn wait(
     start: impl FnOnce(&block2::DynBlock<dyn Fn(*mut NSError)>),
@@ -284,4 +317,18 @@ pub(crate) fn wait(
     start(&block);
     rx.recv_timeout(TIMEOUT)
         .map_err(|_| "timed out".to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_interval_us;
+
+    #[test]
+    fn default_interval_leaves_room_for_an_early_tick() {
+        // 60 fps on a 120 Hz display: 15 ms, so every second tick qualifies.
+        assert_eq!(default_interval_us(60), 15_000);
+        assert!(default_interval_us(60) < 2 * 1_000_000 / 120);
+        assert_eq!(default_interval_us(30), 30_000);
+        assert_eq!(default_interval_us(0), 900_000);
+    }
 }

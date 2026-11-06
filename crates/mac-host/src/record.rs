@@ -82,7 +82,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         bitrate_bps: o.mbps.saturating_mul(1_000_000),
         max_in_flight: DEFAULT_IN_FLIGHT,
     };
-    let encoder = Encoder::new(&settings, tx.clone())?;
+    let encoder = Encoder::new(&settings, tx.clone(), Default::default())?;
     let capture = Capture::start(
         &display,
         (display.width, display.height),

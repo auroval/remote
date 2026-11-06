@@ -391,6 +391,10 @@ pub async fn read_input(conn: quinn::Connection, mut event: impl FnMut(InputEven
     }
 }
 
+/// Frames the daemon dropped because the client's queue was full (the
+/// network or the client is behind); reported in the "sent" line.
+pub static DROPPED_BEHIND: AtomicU64 = AtomicU64::new(0);
+
 /// Sends frames until the client leaves (`Ok`), the frames run out (`Ok`)
 /// or a frame is an error. Prints a stats line every 5 s; `skipped` is the
 /// encoder's busy counter, when it runs in this process.
@@ -424,9 +428,10 @@ pub async fn send_frames(
                 .map(|s| format!(" ({} skipped: encoder busy)", s.swap(0, Ordering::Relaxed)))
                 .unwrap_or_default();
             println!(
-                "  sent {} frames, {:.1} Mbit/s over the last 5 s{skipped}",
+                "  sent {} frames, {:.1} Mbit/s over the last 5 s{skipped}, {} dropped (client behind)",
                 stats.0,
                 stats.1 as f64 * 8.0 / 5e6,
+                DROPPED_BEHIND.swap(0, Ordering::Relaxed),
             );
             stats = (0, 0);
             next_report += Duration::from_secs(5);
