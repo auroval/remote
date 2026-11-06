@@ -20,8 +20,8 @@ pub fn now_us() -> i64 {
     START.get_or_init(Instant::now).elapsed().as_micros() as i64
 }
 
-/// How many recent pings to pick the fastest from.
-const PINGS: usize = 10;
+/// How many recent pings to pick the fastest from: the last 10 s.
+const PINGS: usize = 40;
 
 /// Host clock → our clock, from ping/pong pairs.
 #[derive(Default)]

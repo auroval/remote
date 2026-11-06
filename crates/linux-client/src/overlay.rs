@@ -103,18 +103,18 @@ impl Overlay {
         host_key: &str,
         grabbed: bool,
         toast: bool,
-        stalled: bool,
+        stalled: Option<u64>,
         at_login: bool,
     ) -> Self {
         let mut o = Overlay::default();
         match state {
             State::Connected => {
-                if stalled {
+                if let Some(secs) = stalled {
                     o.badges.push(Badge {
                         tag: "STALLED".into(),
                         tone: Tone::Amber,
-                        body: "No new picture from the Mac".into(),
-                        detail: String::new(),
+                        body: format!("No answer from the Mac for {secs} s"),
+                        detail: "Waiting for the network".into(),
                         hints: Vec::new(),
                     });
                 }
@@ -509,7 +509,7 @@ mod tests {
             "Right Ctrl",
             true,
             false,
-            false,
+            None,
             false,
         );
         assert!(o.is_empty());
@@ -519,7 +519,7 @@ mod tests {
             "ScrollLock",
             false,
             false,
-            false,
+            None,
             false,
         );
         assert_eq!(local.badges[0].tag, "LOCAL");
@@ -530,7 +530,7 @@ mod tests {
             "Right Ctrl",
             true,
             true,
-            false,
+            None,
             false,
         );
         assert_eq!(toast.badges[0].tag, "→ Mac");
@@ -543,7 +543,7 @@ mod tests {
             "Right Ctrl",
             false,
             false,
-            false,
+            None,
             false,
         );
         assert!(lost.dim);
@@ -559,7 +559,7 @@ mod tests {
             "Right Ctrl",
             false,
             false,
-            false,
+            None,
             false,
         );
         assert_eq!(gone.card.unwrap().hints[0].action, "Retry");
@@ -569,10 +569,21 @@ mod tests {
             "Right Ctrl",
             true,
             false,
-            false,
+            None,
             true,
         );
         assert_eq!(login.badges[0].tag, "VIEW ONLY");
+        let stalled = Overlay::new(
+            &State::Connected,
+            "Mac",
+            "Right Ctrl",
+            true,
+            false,
+            Some(3),
+            false,
+        );
+        assert_eq!(stalled.badges[0].tag, "STALLED");
+        assert!(stalled.badges[0].body.contains("3 s"));
     }
 
     #[test]
@@ -583,7 +594,7 @@ mod tests {
             "Right Ctrl",
             false,
             false,
-            false,
+            None,
             false,
         );
         let one = render_badge(&o.badges[0], 1.0, 10_000.0);

@@ -99,6 +99,33 @@ grep -q "connection lost: the Mac host is shutting down" "$log/reconnect.log" ||
 grep -q "^reconnected" "$log/reconnect.log" || fail "the client didn't reconnect"
 grep -q "disconnected" "$log/host3b.log" || fail "no session with the restarted host"
 
+# A short network outage (3 s, nothing from the host gets through): the
+# client waits it out on the same connection and the picture is back within
+# a second. A long one (15 s, both ways): the client gives up on the
+# connection, tells the host it lost the link, and reconnects by itself
+# once the network is back.
+"$B/examples/fake_host" --port 4522 --pair-code 222333 --frames 240 --outage 2:3 >"$log/host-outage.log" 2>&1 &
+outage_host=$!
+sleep 1
+client l pair 127.0.0.1:4522 --code 222333 --name outage >"$log/pair-outage.log" 2>&1 || fail "pairing with the outage host failed"
+client l outage >"$log/outage.log" 2>&1 || true
+wait $outage_host || true
+grep -q "^no answer from the Mac" "$log/outage.log" || fail "the client didn't notice the outage: $(tail -3 "$log/outage.log")"
+grep -q "connection lost" "$log/outage.log" && fail "a 3 s outage cost the connection: $(grep 'connection lost' "$log/outage.log")"
+back=$(sed -n 's/^the Mac answers again after \([0-9.]*\) s, same connection$/\1/p' "$log/outage.log")
+[ -n "$back" ] || fail "the picture didn't come back on the same connection: $(tail -3 "$log/outage.log")"
+awk -v b="$back" 'BEGIN { exit !(b < 4.0) }' || fail "the picture took ${back} s to come back after a 3 s outage"
+grep -q "client asked for a keyframe" "$log/host-outage.log" || fail "no keyframe asked for after the outage"
+"$B/examples/fake_host" --port 4523 --pair-code 444555 --outage 2:15:both >"$log/host-long.log" 2>&1 &
+long_host=$!
+sleep 1
+client m pair 127.0.0.1:4523 --code 444555 --name long >"$log/pair-long.log" 2>&1 || fail "pairing with the long-outage host failed"
+XDG_CONFIG_HOME="$log/m" timeout 24 "$B/aetherdesk" long >"$log/long.log" 2>&1 || true
+kill $long_host 2>/dev/null || true; wait $long_host 2>/dev/null || true
+grep -q "connection lost: no answer from the Mac for 12 s" "$log/long.log" || fail "the client didn't give up on the dead connection: $(tail -3 "$log/long.log")"
+grep -q "^reconnected" "$log/long.log" || fail "the client didn't reconnect after the outage: $(tail -3 "$log/long.log")"
+[ "$(grep -c '  video: ' "$log/host-long.log")" -ge 2 ] || fail "no second session after the outage"
+
 # Driving the window through the test hooks (a client built with
 # --features test-hooks): Right Ctrl releases the grab and shows the LOCAL
 # badge, a second one grabs again; a snapshot captures the window.
@@ -256,4 +283,4 @@ else
   narrow_ok=" (no NET_ADMIN: narrow-path check skipped)"
 fi
 
-echo "e2e OK: pairing (wrong code refused), $shown seconds of video (H.264), $hevc_shown (HEVC) and $hevc444_shown (HEVC 4:4:4), unpaired client and foreign host refused, reconnect after a host restart${hooks_ok}, found on the LAN by name and after moving, recognised at an unknown address${narrow_ok}"
+echo "e2e OK: pairing (wrong code refused), $shown seconds of video (H.264), $hevc_shown (HEVC) and $hevc444_shown (HEVC 4:4:4), unpaired client and foreign host refused, reconnect after a host restart, outages ridden out (3 s) and reconnected after (15 s)${hooks_ok}, found on the LAN by name and after moving, recognised at an unknown address${narrow_ok}"

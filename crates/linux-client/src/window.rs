@@ -30,8 +30,9 @@ use crate::pointer::{Change, Pointer};
 /// How long the "input → Mac" note shows after grabbing.
 const TOAST: Duration = Duration::from_secs(2);
 
-/// No frames or pongs for this long while connected: say so.
-const STALLED_US: i64 = 1_500_000;
+/// No frames or pongs for this long while connected: say so. Pongs come
+/// four times a second, so this is a second without any answer.
+const STALLED_US: i64 = 1_000_000;
 
 /// What the window needs from the link.
 pub struct LinkView<'a> {
@@ -362,7 +363,8 @@ pub fn run(
         if toast_until.is_some_and(|t| Instant::now() >= t) {
             toast_until = None;
         }
-        let stalled = connected && now_us() - link.last_heard.load(Ordering::Relaxed) > STALLED_US;
+        let quiet_us = now_us() - link.last_heard.load(Ordering::Relaxed);
+        let stalled = (connected && quiet_us > STALLED_US).then_some(quiet_us as u64 / 1_000_000);
         let overlay = Overlay::new(
             &state,
             host,
