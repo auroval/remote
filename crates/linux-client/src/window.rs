@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::{ClipboardEcho, InputEvent, MAX_CLIPBOARD, Welcome};
+use aetherdesk_proto::{ClipboardEcho, DisplayMode, InputEvent, MAX_CLIPBOARD, Welcome};
 use anyhow::{Context, anyhow};
 use sdl3::clipboard::ClipboardUtil;
 use sdl3::event::Event;
@@ -48,10 +48,21 @@ pub struct LinkView<'a> {
     pub pointer: Receiver<aetherdesk_proto::HostControl>,
     /// Our size in pixels, for the host to size the picture to.
     pub view: UnboundedSender<(u32, u32)>,
+    pub display: DisplayChoice<'a>,
     /// The Mac's sound, when asked for.
     pub audio: Option<Receiver<aetherdesk_proto::AudioPacket>>,
     /// Our microphone, for the Mac, when asked for and taken.
     pub mic: Option<UnboundedSender<aetherdesk_proto::AudioPacket>>,
+}
+
+/// Fit or match (#111): D switches while input is local.
+pub struct DisplayChoice<'a> {
+    /// What the session starts with.
+    pub mode: DisplayMode,
+    /// To the host.
+    pub send: UnboundedSender<DisplayMode>,
+    /// Keeps the choice for this host.
+    pub remember: &'a dyn Fn(DisplayMode),
 }
 
 /// Also the Flatpak ID and the name of the desktop file.
@@ -172,6 +183,7 @@ pub fn run(
     #[cfg(feature = "test-hooks")]
     let hooks = crate::testhooks::Hooks::start();
 
+    let mut display_mode = link.display.mode;
     let mut fps = 0.0;
     let mut at_login = link.login_window.load(Ordering::Relaxed);
     let mut state = State::Connected;
@@ -260,6 +272,20 @@ pub fn run(
                     _ => {}
                 },
                 _ if !connected => {}
+                // Input is local: D switches between fit and match.
+                Event::KeyDown {
+                    scancode: Some(Scancode::D),
+                    repeat: false,
+                    ..
+                } if !forwarder.grabbed() => {
+                    display_mode = match display_mode {
+                        DisplayMode::Fit => DisplayMode::Match,
+                        DisplayMode::Match => DisplayMode::Fit,
+                    };
+                    say!("display: {}", display_mode.name());
+                    let _ = link.display.send.send(display_mode);
+                    (link.display.remember)(display_mode);
+                }
                 _ => {
                     if let Some(grabbed) = forwarder.handle(&event, &canvas, size) {
                         apply_grab(&mut canvas, grabbed, &mut pointer, (w, h));
@@ -272,10 +298,11 @@ pub fn run(
             }
         }
         // Tell the host our size, so it sends pictures that fit: right away
-        // the first time, after 250 ms without change later.
-        if let Ok(px) = canvas.output_size()
-            && Some(px) != view_sent
-        {
+        // the first time, after 250 ms without change later. The whole
+        // window, not the letterboxed picture in it (`output_size` with a
+        // logical size): match needs the window's own aspect ratio.
+        let px = canvas.window().size_in_pixels();
+        if Some(px) != view_sent {
             match view_new {
                 Some((p, _)) if p == px => {}
                 _ => view_new = Some((px, Instant::now())),
@@ -395,7 +422,7 @@ pub fn run(
         }
         let quiet_us = now_us() - link.last_heard.load(Ordering::Relaxed);
         let stalled = (connected && quiet_us > STALLED_US).then_some(quiet_us as u64 / 1_000_000);
-        let overlay = Overlay::new(
+        let mut overlay = Overlay::new(
             &state,
             host,
             &host_key().name,
@@ -404,6 +431,7 @@ pub fn run(
             stalled,
             at_login,
         );
+        overlay.offer_display(display_mode);
         // Redraw on a new picture, or when the overlay changed; while it
         // shows something that counts, a few times a second is plenty.
         let changed = drawn.as_ref() != Some(&overlay);
@@ -443,7 +471,7 @@ pub fn run(
                         forwarder.grabbed(),
                         at_login,
                         &overlay,
-                        canvas.output_size().unwrap_or_default(),
+                        canvas.window().size_in_pixels(),
                         pointer.local(),
                         size,
                         player.as_ref().map(|p| &*p.stats),

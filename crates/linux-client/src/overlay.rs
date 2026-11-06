@@ -11,6 +11,8 @@ use std::sync::OnceLock;
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
 
+use aetherdesk_proto::DisplayMode;
+
 use crate::net::State;
 
 static INTER: &[u8] = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
@@ -168,6 +170,19 @@ impl Overlay {
             }
         }
         o
+    }
+
+    /// While input is local, the LOCAL badge offers to switch the display
+    /// mode (#111) with D: to match the Mac to the window, or back to fit.
+    pub fn offer_display(&mut self, mode: DisplayMode) {
+        let Some(local) = self.badges.iter_mut().find(|b| b.tag == "LOCAL") else {
+            return;
+        };
+        let action = match mode {
+            DisplayMode::Fit => "Match the Mac to this window",
+            DisplayMode::Match => "Show the whole display",
+        };
+        local.hints.push(hint("D", action, false));
     }
 
     pub fn is_empty(&self) -> bool {
@@ -584,6 +599,44 @@ mod tests {
         );
         assert_eq!(stalled.badges[0].tag, "STALLED");
         assert!(stalled.badges[0].body.contains("3 s"));
+    }
+
+    #[test]
+    fn local_input_offers_the_display_switch() {
+        let local = |mode| {
+            let mut o = Overlay::new(
+                &State::Connected,
+                "Mac",
+                "Right Ctrl",
+                false,
+                false,
+                None,
+                false,
+            );
+            o.offer_display(mode);
+            o.badges[0].hints.clone()
+        };
+        let fit = local(DisplayMode::Fit);
+        assert_eq!(fit.len(), 2);
+        assert_eq!(fit[1].key, "D");
+        assert!(fit[1].action.contains("Match"));
+        assert!(
+            local(DisplayMode::Match)[1]
+                .action
+                .contains("whole display")
+        );
+        // Grabbed: nothing to offer, the keys go to the Mac.
+        let mut grabbed = Overlay::new(
+            &State::Connected,
+            "Mac",
+            "Right Ctrl",
+            true,
+            false,
+            None,
+            false,
+        );
+        grabbed.offer_display(DisplayMode::Match);
+        assert!(grabbed.is_empty());
     }
 
     #[test]

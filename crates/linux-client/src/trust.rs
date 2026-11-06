@@ -3,10 +3,12 @@
 //! Flatpak always `~/.config/aetherdesk`):
 //!
 //! - `client.cert.der`, `client.key.der`: this client's certificate (key 0600);
-//! - `hosts`: one paired host per line, `<fingerprint> <address> <name>`.
+//! - `hosts`: one paired host per line, `<fingerprint> <address> <name>`;
+//! - `display`: the display mode picked per host, `<fingerprint> fit|match`.
 
 use std::path::{Path, PathBuf};
 
+use aetherdesk_proto::DisplayMode;
 use aetherdesk_proto::trust::{Fingerprint, Identity, write_private};
 
 /// A paired host.
@@ -137,6 +139,34 @@ impl Store {
     }
 }
 
+impl Store {
+    /// The display mode last picked for this host, if any.
+    pub fn display_mode(&self, host: &Fingerprint) -> Option<DisplayMode> {
+        let text = std::fs::read_to_string(self.dir.join("display")).ok()?;
+        let host = host.to_string();
+        text.lines().find_map(|l| {
+            let (fp, mode) = l.split_once(' ')?;
+            (fp == host).then(|| DisplayMode::parse(mode)).flatten()
+        })
+    }
+
+    /// Remembers the display mode picked for this host.
+    pub fn set_display_mode(&self, host: &Fingerprint, mode: DisplayMode) -> Result<(), String> {
+        let path = self.dir.join("display");
+        let key = host.to_string();
+        let mut text: String = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.split_once(' ').is_some_and(|(fp, _)| fp != key))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        text.push_str(&format!("{key} {}\n", mode.name()));
+        std::fs::create_dir_all(&self.dir)
+            .and_then(|()| write_private(&path, text.as_bytes()))
+            .map_err(|e| format!("saving {}: {e}", path.display()))
+    }
+}
+
 impl Host {
     fn matches(&self, which: &str) -> bool {
         self.name.eq_ignore_ascii_case(which) || self.address == which
@@ -197,6 +227,16 @@ mod tests {
         );
         s.set_address(&Fingerprint([9; 32]), "192.0.2.99").unwrap();
         assert_eq!(s.hosts().unwrap().len(), 1);
+
+        // The display mode, per host.
+        let (a, b) = (Fingerprint([3; 32]), Fingerprint([4; 32]));
+        assert_eq!(s.display_mode(&a), None);
+        s.set_display_mode(&a, DisplayMode::Match).unwrap();
+        s.set_display_mode(&b, DisplayMode::Fit).unwrap();
+        assert_eq!(s.display_mode(&a), Some(DisplayMode::Match));
+        s.set_display_mode(&a, DisplayMode::Fit).unwrap();
+        assert_eq!(s.display_mode(&a), Some(DisplayMode::Fit));
+        assert_eq!(s.display_mode(&b), Some(DisplayMode::Fit));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

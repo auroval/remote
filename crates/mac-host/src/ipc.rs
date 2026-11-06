@@ -5,7 +5,7 @@
 //! picks the agent of the console session when a client connects and sends
 //! [`ToAgent::Start`]; frames flow back until [`ToAgent::Stop`].
 
-use aetherdesk_proto::{AudioPacket, Codec, HostControl, InputEvent, VideoFrame};
+use aetherdesk_proto::{AudioPacket, Codec, DisplayMode, HostControl, InputEvent, VideoFrame};
 use anyhow::Context;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -15,7 +15,7 @@ pub const SOCKET: &str = "/var/run/aetherdesk/agent.sock";
 
 /// Daemon and agent are one binary, installed together; a different build
 /// on the other end means a half-finished install.
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc10");
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc11");
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ToAgent {
@@ -31,6 +31,9 @@ pub enum ToAgent {
         codec: Codec,
         /// The client's window in pixels, when it said; the picture fits it.
         view: Option<(u32, u32)>,
+        /// Whether the Mac's display follows the window
+        /// ([`DisplayMode::Match`]; only in a user session).
+        display: DisplayMode,
         /// Send the session's sound too ([`FromAgent::Audio`]).
         audio: bool,
         /// The client's name, for the on-screen indicator.
@@ -45,6 +48,8 @@ pub enum ToAgent {
     },
     /// The client's window changed size.
     ViewSize(u32, u32),
+    /// The client switched between fit and match.
+    Display(DisplayMode),
     /// Stop capturing; the client left.
     Stop,
     RequestKeyframe,
@@ -116,12 +121,14 @@ mod tests {
                 clipboard: true,
                 codec: Codec::Hevc,
                 view: Some((2560, 1400)),
+                display: DisplayMode::Match,
                 audio: true,
                 client: "werkkamer".into(),
                 speaker: true,
                 mic: true,
             },
             ToAgent::ViewSize(1280, 700),
+            ToAgent::Display(DisplayMode::Fit),
             ToAgent::Input(InputEvent::Key {
                 hid: 0x04,
                 down: true,

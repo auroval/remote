@@ -32,6 +32,10 @@
 //! With clipboard sync on, it hands every text the client copies back with
 //! " ✓" added, as if the Mac copied that.
 //!
+//! In `match` (`--display match` on the client) it pretends the Mac
+//! switched to a mode of exactly the window's size: the picture then comes
+//! at the window's size, unscaled.
+//!
 //! When the client wants sound, it plays a beep: 440 Hz, a quarter second
 //! every second, as Opus from ffmpeg's libopus.
 
@@ -57,8 +61,9 @@ mod linux {
     use aetherdesk_proto::trust::{Fingerprint, Identity, Role, start_pake};
     use aetherdesk_proto::{
         AUDIO_FRAMES, AUDIO_RATE, AudioPacket, CLOSE_CODEC, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED,
-        CLOSE_WRONG_CODE, ClientControl, Codec, Hello, HostControl, HostTiming, InputEvent, Intent,
-        PROTOCOL_VERSION, PairMsg, SessionKind, VideoFrame, Welcome, picture_size, worth_resizing,
+        CLOSE_WRONG_CODE, ClientControl, Codec, DisplayMode, Hello, HostControl, HostTiming,
+        InputEvent, Intent, PROTOCOL_VERSION, PairMsg, SessionKind, VideoFrame, Welcome,
+        picture_size, worth_resizing,
     };
     use anyhow::{Context, anyhow, bail};
     use ffmpeg_next as ffmpeg;
@@ -547,6 +552,7 @@ mod linux {
         }
         let (kf_tx, mut kf_rx) = tokio::sync::mpsc::unbounded_channel();
         let (view_tx, mut view_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (display_tx, mut display_rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Ok(Some(msg)) = quic::recv(&mut ctl_recv).await {
                 match msg {
@@ -556,6 +562,10 @@ mod linux {
                     }
                     ClientControl::ViewSize { width, height } => {
                         let _ = view_tx.send((width, height));
+                    }
+                    ClientControl::Display(mode) => {
+                        println!("  display: {}", mode.name());
+                        let _ = display_tx.send(mode);
                     }
                     ClientControl::Ping { client_us } => {
                         let pong = HostControl::Pong {
@@ -598,6 +608,8 @@ mod linux {
         let mut encoder = Encoder::new(format, codec)?;
         let start = Instant::now();
         let mut n = 0u64;
+        let mut display_mode = DisplayMode::Fit;
+        let mut last_view = None;
         loop {
             if limit.is_some_and(|l| n >= l) {
                 if close_code != 0 {
@@ -611,8 +623,22 @@ mod linux {
             let mut force_key = kf_rx.try_recv().is_ok();
             // The client's window changed: encode at the size that fits it,
             // like the Mac does (a new encoder starts with a keyframe).
+            let mut changed = false;
             while let Ok(view) = view_rx.try_recv() {
-                let wanted = picture_size((w, h), Some(view));
+                last_view = Some(view);
+                changed = true;
+            }
+            while let Ok(mode) = display_rx.try_recv() {
+                display_mode = mode;
+                changed = true;
+            }
+            if let Some(view) = last_view.filter(|_| changed) {
+                // Match: as if the Mac had a mode of the window's size.
+                let display = match display_mode {
+                    DisplayMode::Fit => (w, h),
+                    DisplayMode::Match => (view.0 & !1, view.1 & !1),
+                };
+                let wanted = picture_size(display, Some(view));
                 if worth_resizing((encoder.w as u32, encoder.h as u32), wanted) {
                     println!(
                         "  picture {}x{} (window {}x{})",

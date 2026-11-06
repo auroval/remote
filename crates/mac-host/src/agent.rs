@@ -7,7 +7,7 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use aetherdesk_proto::{Codec, HostControl, InputEvent, picture_size, worth_resizing};
+use aetherdesk_proto::{Codec, DisplayMode, HostControl, InputEvent, picture_size, worth_resizing};
 use anyhow::Context;
 use objc2_core_graphics::CGPreflightPostEventAccess;
 use tokio::net::UnixStream;
@@ -31,6 +31,11 @@ the screen.
 
 /// How long to wait for a display that is just waking up.
 const DISPLAY_WAIT: Duration = Duration::from_secs(5);
+
+/// How long the client's window has to stay the same size before the
+/// display follows it in `match`: a mode switch takes a moment and
+/// rearranges the Mac's windows, so not while a window is being dragged.
+const SETTLE: Duration = Duration::from_secs(1);
 
 /// Wait between attempts to reach the daemon.
 const RETRY: Duration = Duration::from_secs(2);
@@ -83,6 +88,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     crate::mute::recover();
     crate::output::recover();
+    crate::display::recover();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -99,6 +105,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 println!("SIGTERM: stopping");
                 crate::mute::recover();
                 crate::output::recover();
+                crate::display::recover();
                 // Not waiting for the capture to wind down: the session is
                 // going away anyway.
                 std::process::exit(0);
@@ -149,6 +156,8 @@ struct Active {
     settings: StreamSettings,
     shows_cursor: bool,
     codec: Codec,
+    /// Where the client's pointer went last, shared by injector and watcher.
+    last_move: cursor::LastMove,
     injector: std::sync::mpsc::Sender<InputEvent>,
     /// Input events passed to the injector, for the log.
     inputs: u64,
@@ -158,6 +167,15 @@ struct Active {
     _pointer: Option<cursor::Watcher>,
     /// The on-screen sign of the session; dropped with it.
     _indicator: Option<crate::indicator::Indicator>,
+    /// The client's window in pixels, once it said.
+    view: Option<(u32, u32)>,
+    /// Fit or match, as the client asked.
+    display_mode: DisplayMode,
+    /// The display's mode while it follows the window; puts the original
+    /// back when dropped, after the capture stopped.
+    matcher: Option<crate::display::Matcher>,
+    /// When to make the display follow the window (`match`, debounced).
+    rematch_at: Option<tokio::time::Instant>,
     /// The session's sound, when the client wants it.
     sound: Option<AudioCapture>,
     /// Why sound didn't start, when it was asked for.
@@ -205,6 +223,128 @@ impl Active {
         }
     }
 
+    /// The client's window changed: in `fit` the picture follows now, in
+    /// `match` the display follows once the window settled.
+    fn window(&mut self, view: (u32, u32), out: &mpsc::UnboundedSender<FromAgent>) {
+        // The first size the client says isn't a window being dragged.
+        let settle = if self.view.is_some() {
+            SETTLE
+        } else {
+            Duration::ZERO
+        };
+        self.view = Some(view);
+        match self.display_mode {
+            DisplayMode::Fit => self.view_size(view, out),
+            DisplayMode::Match => self.rematch_at = Some(tokio::time::Instant::now() + settle),
+        }
+    }
+
+    /// The client switched between fit and match.
+    fn set_display(&mut self, mode: DisplayMode, out: &mpsc::UnboundedSender<FromAgent>) {
+        self.display_mode = mode;
+        if mode == DisplayMode::Match && unsafe { libc::getuid() } == 0 {
+            println!("display: match only in a user session; the login window stays at fit");
+        }
+        self.rematch_at = None;
+        self.rematch(out);
+    }
+
+    /// Puts the display in the mode the client wants for its window (the
+    /// best match, or its own mode for `fit`) and captures it again if the
+    /// mode changed; otherwise only the picture size follows the window.
+    fn rematch(&mut self, out: &mpsc::UnboundedSender<FromAgent>) {
+        let user_session = unsafe { libc::getuid() } != 0;
+        // None: stays as it is. Some(Some(mode)): switch. Some(None): back.
+        let change = match (self.display_mode, self.view) {
+            (DisplayMode::Match, None) => return, // until the client says its size
+            (DisplayMode::Match, Some(view)) if user_session => {
+                let id = unsafe { self.display.display.displayID() };
+                self.matcher
+                    .get_or_insert_with(|| crate::display::Matcher::new(id))
+                    .plan(view)
+                    .inspect_err(|e| eprintln!("display: can't match the window: {e}"))
+                    .ok()
+                    .flatten()
+                    .map(Some)
+            }
+            _ => self
+                .matcher
+                .as_ref()
+                .is_some_and(|m| m.changed())
+                .then_some(None),
+        };
+        let (Some(target), Some(matcher)) = (change, self.matcher.as_mut()) else {
+            if let Some(view) = self.view {
+                self.view_size(view, out);
+            }
+            return;
+        };
+        // The display changes under the running capture: nothing may pass
+        // on that it fails meanwhile.
+        self.pump.abort();
+        match target {
+            Some(mode) => {
+                if let Err(e) = matcher.switch(&mode) {
+                    eprintln!("display: can't switch to {mode}: {e}");
+                }
+            }
+            None => {
+                matcher.restore();
+            }
+        }
+        self.recapture(out);
+    }
+
+    /// The display's mode changed: capture it again, at its new size, with
+    /// the pointer mapped to its new bounds. The new capture starts before
+    /// the old one stops, as in [`view_size`](Self::view_size).
+    fn recapture(&mut self, out: &mpsc::UnboundedSender<FromAgent>) {
+        self.pump.abort();
+        let started = wait_for_display().and_then(|display| {
+            let size = picture_size((display.width as u32, display.height as u32), self.view);
+            let (stream, pump) = spawn_stream(
+                &display,
+                size,
+                &self.settings,
+                self.shows_cursor,
+                self.codec,
+                out,
+            )?;
+            Ok((display, stream, pump))
+        });
+        let (display, stream, pump) = match started {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("can't capture after the mode change: {e:#}");
+                // Back to the mode that worked, and try once more there.
+                if self.matcher.as_mut().is_some_and(|m| m.restore()) {
+                    self.display_mode = DisplayMode::Fit;
+                    return self.recapture(out);
+                }
+                let _ = out.send(FromAgent::Failed(format!("{e:#}")));
+                return;
+            }
+        };
+        let old = std::mem::replace(&mut self.stream, stream);
+        if let Err(e) = old.capture.stop() {
+            eprintln!("stopping capture: {e}");
+        }
+        self.pump = pump;
+        self.injector = stream::spawn_injector(display.bounds, self.last_move.clone());
+        if self._pointer.is_some() {
+            self._pointer = Some(pointer_watcher(&display, &self.last_move, out));
+        }
+        println!(
+            "capturing {}x{} (display {}x{})",
+            self.stream.width, self.stream.height, display.width, display.height
+        );
+        let _ = out.send(FromAgent::Started {
+            width: display.width as u32,
+            height: display.height as u32,
+        });
+        self.display = display;
+    }
+
     fn stop(self) {
         if let Some(s) = self.sound {
             s.stop();
@@ -240,6 +380,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
     let mut active: Option<Active> = None;
     let login_window = unsafe { libc::getuid() } == 0;
     let result = loop {
+        let rematch_at = active.as_ref().and_then(|a| a.rematch_at);
         let msg = tokio::select! {
             m = ipc::read::<ToAgent>(&mut r) => match m {
                 Ok(Some(m)) => m,
@@ -252,6 +393,15 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                 println!("capture lost in the login window");
                 break Ok(Ended::Restart);
             }
+            // The client's window settled: the display follows (match).
+            _ = tokio::time::sleep_until(rematch_at.unwrap_or_else(tokio::time::Instant::now)),
+                if rematch_at.is_some() => {
+                if let Some(a) = &mut active {
+                    a.rematch_at = None;
+                    a.rematch(&out);
+                }
+                continue;
+            }
         };
         match msg {
             ToAgent::Start {
@@ -261,6 +411,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                 clipboard,
                 codec,
                 view,
+                display,
                 audio,
                 speaker,
                 mic,
@@ -277,11 +428,15 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                 match start(
                     &settings, &out, clipboard, codec, view, audio, speaker, mic, &client,
                 ) {
-                    Ok(a) => {
+                    Ok(mut a) => {
                         println!(
                             "capturing {}x{} for the daemon, {codec}",
                             a.stream.width, a.stream.height
                         );
+                        if display == DisplayMode::Match {
+                            a.display_mode = display;
+                            a.rematch_at = Some(tokio::time::Instant::now());
+                        }
                         // Seen at logout on macOS 27: sound fails with 1003
                         // and the picture stays black, without an error. A
                         // fresh agent captures fine. Once, in case sound
@@ -313,7 +468,12 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
             }
             ToAgent::ViewSize(width, height) => {
                 if let Some(a) = &mut active {
-                    a.view_size((width, height), &out);
+                    a.window((width, height), &out);
+                }
+            }
+            ToAgent::Display(mode) => {
+                if let Some(a) = &mut active {
+                    a.set_display(mode, &out);
                 }
             }
             ToAgent::RequestKeyframe => {
@@ -398,14 +558,7 @@ fn start(
     let last_move = cursor::LastMove::default();
     let pointer = if local_pointer {
         println!("pointer: drawn by the client");
-        let out = out.clone();
-        Some(cursor::Watcher::start(
-            display.bounds,
-            last_move.clone(),
-            move |msg| {
-                let _ = out.send(FromAgent::Control(msg));
-            },
-        ))
+        Some(pointer_watcher(&display, &last_move, out))
     } else {
         println!("pointer: in the video");
         let _ = out.send(FromAgent::Control(HostControl::CursorInVideo));
@@ -457,7 +610,8 @@ fn start(
         sound_error,
         _muted: muted,
         _output: output,
-        injector: stream::spawn_injector(display.bounds, last_move),
+        injector: stream::spawn_injector(display.bounds, last_move.clone()),
+        last_move,
         stream,
         pump,
         display,
@@ -468,6 +622,22 @@ fn start(
         pasteboard,
         _pointer: pointer,
         _indicator: indicator,
+        view,
+        display_mode: DisplayMode::Fit,
+        matcher: None,
+        rematch_at: None,
+    })
+}
+
+/// Sends the pointer's shape and the Mac's moves of it, over `display`.
+fn pointer_watcher(
+    display: &capture::Display,
+    last_move: &cursor::LastMove,
+    out: &mpsc::UnboundedSender<FromAgent>,
+) -> cursor::Watcher {
+    let out = out.clone();
+    cursor::Watcher::start(display.bounds, last_move.clone(), move |msg| {
+        let _ = out.send(FromAgent::Control(msg));
     })
 }
 

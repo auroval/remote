@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 use aetherdesk_proto::trust::{Fingerprint, Role, start_pake};
 use aetherdesk_proto::{
     AudioPacket, CLOSE_CODEC, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN,
-    CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl, Codec, DEFAULT_PORT, Hello, HostControl,
-    InputEvent, Intent, MAX_CLIPBOARD, PROTOCOL_VERSION, PairMsg, VideoFrame, Welcome, quic,
+    CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl, Codec, DEFAULT_PORT, DisplayMode, Hello,
+    HostControl, InputEvent, Intent, MAX_CLIPBOARD, PROTOCOL_VERSION, PairMsg, VideoFrame, Welcome,
+    quic,
 };
 use anyhow::{Context, bail};
 use tokio::sync::mpsc::{self, UnboundedReceiver, unbounded_channel};
@@ -325,7 +326,8 @@ pub async fn welcome(
 
 /// Handles the control stream until it ends: keyframe requests go to
 /// `keyframe`, text the client copied to `clipboard`, its window size to
-/// `view_size`, pings are answered with the host clock, and `notices` (e.g.
+/// `view_size`, fit or match to `display`, pings are answered with the
+/// host clock, and `notices` (e.g.
 /// [`HostControl::Session`] or the Mac's copies) are passed on to the
 /// client.
 pub async fn read_control(
@@ -335,6 +337,7 @@ pub async fn read_control(
     keyframe: impl Fn(),
     clipboard: impl Fn(String),
     view_size: impl Fn(u32, u32),
+    display: impl Fn(DisplayMode),
 ) {
     // Reading and writing run side by side: a read can't be interrupted
     // halfway through a message without losing the stream.
@@ -344,6 +347,7 @@ pub async fn read_control(
             match msg {
                 ClientControl::RequestKeyframe => keyframe(),
                 ClientControl::ViewSize { width, height } => view_size(width, height),
+                ClientControl::Display(mode) => display(mode),
                 ClientControl::Clipboard(text) if text.len() <= MAX_CLIPBOARD => clipboard(text),
                 ClientControl::Clipboard(text) => {
                     println!(

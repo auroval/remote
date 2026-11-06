@@ -21,6 +21,8 @@ mod capture;
 mod cursor;
 #[cfg(target_os = "macos")]
 mod daemon;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod display;
 #[cfg(target_os = "macos")]
 mod dump;
 #[cfg(target_os = "macos")]
