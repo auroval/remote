@@ -422,6 +422,9 @@ pub mod trust;
 #[cfg(feature = "quic")]
 pub mod discovery;
 
+#[cfg(feature = "still")]
+pub mod still;
+
 /// QUIC endpoints and sending/receiving messages on QUIC streams.
 #[cfg(feature = "quic")]
 pub mod quic {

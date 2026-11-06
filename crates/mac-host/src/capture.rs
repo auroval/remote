@@ -2,6 +2,7 @@
 //! as NV12 pixel buffers on a private dispatch queue and go straight into the
 //! encoder there, so pixel data never crosses into Rust threads.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
@@ -10,10 +11,11 @@ use dispatch2::{DispatchQueue, DispatchRetained};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{AnyThread, DefinedClass, define_class, msg_send};
+use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayMode};
 use objc2_core_media::{CMSampleBuffer, CMTime};
 use objc2_core_video::{
-    kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+    CVImageBuffer, kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
 };
 use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol};
 use objc2_screen_capture_kit::{
@@ -21,8 +23,10 @@ use objc2_screen_capture_kit::{
     SCStreamConfiguration, SCStreamDelegate, SCStreamOutput, SCStreamOutputType, SCWindow,
 };
 
+use crate::dump::Dump;
 use crate::encoder::{Encoder, EncoderOutput};
 use crate::input::Rect;
+use crate::scale::Scaler;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -107,6 +111,10 @@ pub fn main_display() -> Result<Display, String> {
 struct OutputIvars {
     encoder: Encoder,
     errors: EncoderOutput,
+    /// Our own downscale (`AETHERDESK_CAPTURE_SCALE`), and whether it failed.
+    scaler: Option<(Scaler, AtomicBool)>,
+    /// `AETHERDESK_DUMP_FRAME`.
+    dump: Option<Dump>,
 }
 
 define_class!(
@@ -134,6 +142,7 @@ define_class!(
                 return;
             };
             let pts = unsafe { sample.presentation_time_stamp() };
+            let image = self.prepare(image);
             self.ivars().encoder.encode(&image, pts);
         }
     }
@@ -152,9 +161,41 @@ define_class!(
 );
 
 impl StreamOutput {
-    fn new(encoder: Encoder, errors: EncoderOutput) -> Retained<Self> {
-        let this = Self::alloc().set_ivars(OutputIvars { encoder, errors });
+    fn new(encoder: Encoder, errors: EncoderOutput, scaler: Option<Scaler>) -> Retained<Self> {
+        let this = Self::alloc().set_ivars(OutputIvars {
+            encoder,
+            errors,
+            scaler: scaler.map(|s| (s, AtomicBool::new(false))),
+            dump: Dump::from_env(),
+        });
         unsafe { msg_send![super(this), init] }
+    }
+
+    /// The #113 experiments, when switched on: our own downscale, saving a
+    /// frame. Otherwise `image` as it is.
+    fn prepare(&self, image: CFRetained<CVImageBuffer>) -> CFRetained<CVImageBuffer> {
+        let ivars = self.ivars();
+        if let Some(d) = &ivars.dump {
+            d.offer(&image);
+        }
+        let Some((scaler, failed)) = &ivars.scaler else {
+            return image;
+        };
+        match scaler.scale(&image) {
+            Ok(scaled) => {
+                if let Some(d) = &ivars.dump {
+                    d.offer(&scaled);
+                }
+                scaled
+            }
+            // The encoder scales a bigger frame itself.
+            Err(e) => {
+                if !failed.swap(true, Ordering::Relaxed) {
+                    eprintln!("capture: {e}; the encoder scales instead");
+                }
+                image
+            }
+        }
     }
 }
 
@@ -214,24 +255,26 @@ impl Capture {
         full_color: bool,
     ) -> Result<Self, String> {
         let filter = filter(display)?;
+        // 4:4:4 needs every pixel's colour: capture RGB and let the
+        // encoder convert. Otherwise 4:2:0 straight from the capture.
+        let format = if full_color {
+            kCVPixelFormatType_32BGRA
+        } else {
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        };
+        let (captured, scaler) = scaled_capture(display, size, format)?;
         let config = unsafe { SCStreamConfiguration::new() };
         unsafe {
             // ScreenCaptureKit scales to this on the GPU.
-            config.setWidth(size.0);
-            config.setHeight(size.1);
-            // 4:4:4 needs every pixel's colour: capture RGB and let the
-            // encoder convert. Otherwise 4:2:0 straight from the capture.
-            config.setPixelFormat(if full_color {
-                kCVPixelFormatType_32BGRA
-            } else {
-                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-            });
+            config.setWidth(captured.0);
+            config.setHeight(captured.1);
+            config.setPixelFormat(format);
             config.setMinimumFrameInterval(CMTime::new(1, fps as i32));
             config.setQueueDepth(5);
             config.setShowsCursor(shows_cursor);
         }
 
-        let handler = StreamOutput::new(encoder, output);
+        let handler = StreamOutput::new(encoder, output, scaler);
         let stream = unsafe {
             SCStream::initWithFilter_configuration_delegate(
                 SCStream::alloc(),
@@ -267,6 +310,31 @@ impl Capture {
         self.output.ivars().encoder.finish();
         res
     }
+}
+
+/// What to capture at for a `size` picture, and our scaler when that's
+/// bigger (`AETHERDESK_CAPTURE_SCALE`, #113).
+fn scaled_capture(
+    display: &Display,
+    size: (usize, usize),
+    format: u32,
+) -> Result<((usize, usize), Option<Scaler>), String> {
+    let tuning = crate::tuning::Tuning::get();
+    let (w, h) = crate::tuning::capture_size(
+        (display.width as u32, display.height as u32),
+        (size.0 as u32, size.1 as u32),
+        tuning.capture_scale,
+    );
+    let captured = (w as usize, h as usize);
+    if captured == size {
+        return Ok((size, None));
+    }
+    let scaler = Scaler::new(size, format, tuning.downsample)?;
+    println!(
+        "capture: {}x{}, scaled to {}x{} ({:?})",
+        captured.0, captured.1, size.0, size.1, tuning.downsample
+    );
+    Ok((captured, Some(scaler)))
 }
 
 /// Calls `start` with a completion block and waits for it.

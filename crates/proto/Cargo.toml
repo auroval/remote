@@ -10,9 +10,12 @@ publish.workspace = true
 [features]
 # Helpers to send/receive messages on quinn streams.
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen", "dep:ring", "dep:spake2", "dep:libc"]
+# Saving one picture as PNG, for comparing host and client (#113).
+still = ["dep:png"]
 
 [dependencies]
 libc = { version = "0.2", optional = true }
+png = { version = "0.18", optional = true }
 postcard.workspace = true
 quinn = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }

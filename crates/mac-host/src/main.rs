@@ -22,6 +22,8 @@ mod cursor;
 #[cfg(target_os = "macos")]
 mod daemon;
 #[cfg(target_os = "macos")]
+mod dump;
+#[cfg(target_os = "macos")]
 mod encoder;
 #[cfg(target_os = "macos")]
 mod indicator;
@@ -48,6 +50,8 @@ mod power;
 #[cfg(target_os = "macos")]
 mod record;
 #[cfg(target_os = "macos")]
+mod scale;
+#[cfg(target_os = "macos")]
 mod serve;
 #[cfg(target_os = "macos")]
 mod session;
@@ -57,6 +61,8 @@ mod speaker;
 mod stream;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod trust;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod tuning;
 
 #[cfg(target_os = "macos")]
 fn main() {
