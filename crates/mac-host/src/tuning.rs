@@ -1,6 +1,8 @@
-//! Experimental picture-quality switches (#113), read once from the
-//! environment. All off by default: without any `AETHERDESK_*` variable
-//! below, capture and encoding are exactly as before.
+//! Picture-quality switches (#113), read once from the environment. One is
+//! on by default: we capture at twice the picture size and scale down
+//! ourselves, which keeps small text crisper than ScreenCaptureKit's own
+//! scaling (measured on the Mac: crisper glyphs for about +4 ms and a few
+//! percent CPU). The rest are experiments, off unless set.
 //!
 //! - `AETHERDESK_BPP=F`: at least F bits per pixel per frame, on top of
 //!   `--mbps` (the bitrate is whichever is higher, at most [`MAX_BITRATE`]).
@@ -12,9 +14,10 @@
 //!   [`REFINE_AFTER`], encode the last frame again, up to N times, so the
 //!   encoder can add the detail a starved frame (e.g. the keyframe after a
 //!   resize) left out.
-//! - `AETHERDESK_CAPTURE_SCALE=2|3|full`: capture at 2× (3×) the picture
-//!   size, at most the display's, or at the display's size, and scale down
-//!   ourselves (VideoToolbox pixel transfer) instead of ScreenCaptureKit.
+//! - `AETHERDESK_CAPTURE_SCALE=1|2|3|full`: capture at the picture size and
+//!   let ScreenCaptureKit scale (`1` or `off`), or at 2× (default) or 3× the
+//!   picture size, at most the display's, or at the display's size, and scale
+//!   down ourselves (VideoToolbox pixel transfer).
 //! - `AETHERDESK_DOWNSAMPLE=average|decimate`: how that scaling filters
 //!   (default average: a box filter).
 //! - `AETHERDESK_DUMP_FRAME=PREFIX`: save the first frame of each capture
@@ -30,15 +33,22 @@ pub const MAX_BITRATE: u32 = 400_000_000;
 pub const REFINE_AFTER: Duration = Duration::from_millis(100);
 
 /// What to capture at, relative to the picture that's encoded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureScale {
     /// At the picture size; ScreenCaptureKit scales.
-    #[default]
     Picture,
     /// At this many times the picture size, capped at the display's.
     Times(u32),
     /// At the display's size.
     Display,
+}
+
+impl Default for CaptureScale {
+    /// Twice the picture size: ScreenCaptureKit's own scaling blurs small
+    /// text, a box filter from 2× keeps it crisp (#113).
+    fn default() -> Self {
+        CaptureScale::Times(2)
+    }
 }
 
 /// How our own downscale filters.
@@ -97,7 +107,7 @@ impl Tuning {
         if let Some(v) = parse("AETHERDESK_CAPTURE_SCALE") {
             match v.to_ascii_lowercase().as_str() {
                 "full" | "display" => t.capture_scale = CaptureScale::Display,
-                "1" | "off" => {}
+                "1" | "off" => t.capture_scale = CaptureScale::Picture,
                 n => match n.parse::<u32>() {
                     Ok(n @ 2..=8) => t.capture_scale = CaptureScale::Times(n),
                     _ => bad.push(format!("AETHERDESK_CAPTURE_SCALE={v}")),
@@ -124,7 +134,7 @@ impl Tuning {
                 eprintln!("tuning: ignoring {b}");
             }
             if t != Tuning::default() {
-                println!("tuning (#113 experiments): {t:?}");
+                println!("tuning (#113): {t:?}");
             }
             t
         })
@@ -178,6 +188,11 @@ mod tests {
     #[test]
     fn nothing_set_is_the_default() {
         assert_eq!(vars(&[]), (Tuning::default(), vec![]));
+        assert_eq!(Tuning::default().capture_scale, CaptureScale::Times(2));
+        assert_eq!(
+            vars(&[("AETHERDESK_CAPTURE_SCALE", "off")]).0.capture_scale,
+            CaptureScale::Picture
+        );
         // Empty counts as unset.
         assert_eq!(vars(&[("AETHERDESK_BPP", "")]).0, Tuning::default());
     }
