@@ -29,6 +29,8 @@ mod discover;
 #[cfg(target_os = "linux")]
 mod dump;
 #[cfg(target_os = "linux")]
+mod frames;
+#[cfg(target_os = "linux")]
 mod input;
 #[cfg(target_os = "linux")]
 mod latency;
@@ -460,6 +462,9 @@ fn run(
     // Decoder thread: every frame must be decoded (P-frames build on each
     // other), but only the newest picture needs to reach the screen.
     let (pictures_tx, pictures) = mpsc::sync_channel(2);
+    // Frame accounting for the log (issue #109); the window adds its part.
+    let frames_seen = std::sync::Arc::new(frames::Frames::default());
+    let counted = frames_seen.clone();
     let keyframes = link.keyframe_requests.clone();
     let input = link.input.clone();
     let frames = link.frames;
@@ -478,9 +483,14 @@ fn run(
             };
             let mut last_request = None::<Instant>;
             for (frame, mut timing) in frames {
+                timing.pts = frame.pts_us as i64;
+                counted.received(timing.pts, timing.received);
                 timing.decode_start = latency::now_us();
                 let result = decoder.decode(&frame, timing, |p| {
-                    let _ = pictures_tx.try_send(p);
+                    counted.decoded();
+                    if let Err(mpsc::TrySendError::Full(_)) = pictures_tx.try_send(p) {
+                        counted.queue_full();
+                    }
                 });
                 if let Err(e) = result {
                     // Lost sync; ask for a keyframe, at most twice a second.
@@ -497,6 +507,7 @@ fn run(
         &welcome,
         &title,
         pictures,
+        &frames_seen,
         input,
         window::LinkView {
             sync: &link.sync,

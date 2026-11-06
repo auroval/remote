@@ -142,19 +142,14 @@ async fn serve(o: &Opts, display: &Display, store: &Store, id: &Identity) -> any
     session::print_connect_hint(o.port, store, "aether-agent pair --serve");
     let host = id.fingerprint();
 
-    // One client at a time: others wait in the accept queue.
+    // One client at a time: others wait their turn.
     let accept = async {
-        while let Some(incoming) = endpoint.accept().await {
-            let conn = match incoming.await {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("handshake failed: {e}");
-                    continue;
-                }
-            };
+        let mut conns = session::handshakes(&endpoint);
+        let mut waiting = std::collections::VecDeque::new();
+        while let Some(conn) = session::next_connection(&mut conns, &mut waiting).await {
             let peer = conn.remote_address();
             println!("{peer}: connected");
-            match session::admit(&conn, store, &host).await {
+            match session::admit_soon(&conn, store, &host).await {
                 Ok(Admitted::Session {
                     send,
                     recv,
@@ -170,7 +165,11 @@ async fn serve(o: &Opts, display: &Display, store: &Store, id: &Identity) -> any
                         codec,
                         audio,
                     };
-                    match client(&conn, send, recv, display, s, wants).await {
+                    let session = client(&conn, send, recv, display, s, wants);
+                    let (result, _) =
+                        session::serve_one(&conn, c.fingerprint, &mut conns, &mut waiting, session)
+                            .await;
+                    match result {
                         Ok(()) => println!("{peer}: disconnected"),
                         Err(e) => eprintln!("{peer}: {e:#}"),
                     }

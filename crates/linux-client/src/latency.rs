@@ -20,8 +20,8 @@ pub fn now_us() -> i64 {
     START.get_or_init(Instant::now).elapsed().as_micros() as i64
 }
 
-/// How many recent pings to pick the fastest from.
-const PINGS: usize = 10;
+/// How many recent pings to pick the fastest from: the last 10 s.
+const PINGS: usize = 40;
 
 /// Host clock → our clock, from ping/pong pairs.
 #[derive(Default)]
@@ -72,6 +72,9 @@ impl ClockSync {
 /// (yet) known.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Timing {
+    /// The host's capture time as sent ([`aetherdesk_proto::VideoFrame::pts_us`]),
+    /// not converted: for the gaps between frames.
+    pub pts: i64,
     pub captured: i64,
     pub delivered: i64,
     pub submitted: i64,
@@ -115,6 +118,23 @@ const STAGES: [(&str, Span); 8] = [
     ("decode", |t| (t.decode_start, t.decoded)),
     ("to screen", |t| (t.decoded, t.presented)),
 ];
+
+/// One frame's stages, in ms: `capture 3.6, encoder wait 0.0, …`.
+pub fn stages(t: &Timing) -> String {
+    let ms = |(a, b): (i64, i64)| {
+        if a == 0 || b == 0 {
+            "?".to_string()
+        } else {
+            format!("{:.1}", (b - a) as f64 / 1000.0)
+        }
+    };
+    let mut parts: Vec<String> = STAGES
+        .iter()
+        .map(|(name, span)| format!("{name} {}", ms(span(t))))
+        .collect();
+    parts.push(format!("total {}", ms((t.captured, t.presented))));
+    parts.join(", ")
+}
 
 /// Collects shown frames and prints a breakdown every few seconds.
 pub struct Stats {
@@ -215,6 +235,7 @@ mod tests {
     #[test]
     fn report_takes_medians() {
         let frame = |d: i64| Timing {
+            pts: 0,
             captured: 1_000,
             delivered: 1_500,
             submitted: 1_500 + d / 2,
@@ -226,6 +247,12 @@ mod tests {
             presented: 5_000 + d,
         };
         let line = report(&[frame(1_000), frame(3_000), frame(2_000)], Some(2_500));
+        let one = stages(&frame(1_000));
+        assert!(
+            one.starts_with("capture 0.5, encoder wait 0.5, encode 0.0"),
+            "{one}"
+        );
+        assert!(one.ends_with("to screen 1.0, total 5.0"), "{one}");
         // 2 ms from capture to encoded: 0.5 capture, 1.0 wait, 0.5 encode.
         assert!(line.contains("capture 0.5"), "{line}");
         assert!(line.contains("encoder wait 1.0"), "{line}");

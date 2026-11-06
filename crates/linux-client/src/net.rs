@@ -10,9 +10,10 @@ use std::time::{Duration, Instant};
 use aetherdesk_proto::quic::{self, HostTrust};
 use aetherdesk_proto::trust::{Identity, Role, start_pake};
 use aetherdesk_proto::{
-    AudioPacket, CLOSE_CODEC, CLOSE_NO_AGENT, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED,
-    CLOSE_SHUTDOWN, CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl, DEFAULT_PORT, Hello,
-    HostControl, InputEvent, Intent, PROTOCOL_VERSION, PairMsg, SessionKind, VideoFrame, Welcome,
+    AudioPacket, CLOSE_CODEC, CLOSE_LINK_LOST, CLOSE_NO_AGENT, CLOSE_NOT_PAIRED,
+    CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN, CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl,
+    DEFAULT_PORT, Hello, HostControl, InputEvent, Intent, PROTOCOL_VERSION, PairMsg, SessionKind,
+    VideoFrame, Welcome,
 };
 use anyhow::{Context, anyhow, bail};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -22,8 +23,24 @@ use crate::latency::{ClockSync, Timing, now_us};
 use crate::trust::Host;
 
 /// How often we probe the host's clock. Pongs also show the link is alive
-/// when the Mac's screen is still and sends no frames.
-const PING_EVERY: Duration = Duration::from_secs(1);
+/// when the Mac's screen is still and sends no frames, so this decides how
+/// soon we notice an outage ([`QUIET`]).
+const PING_EVERY: Duration = Duration::from_millis(250);
+
+/// Nothing heard (frames or pongs) for this long: the link is out. We stay
+/// on the connection, drop input (stale clicks are worse than none) and
+/// move to a new local port every [`REBIND_EVERY`], so the first packet
+/// after the outage gets the host sending again right away
+/// ([`quic::rebind`]).
+const QUIET: Duration = Duration::from_secs(1);
+
+/// While [`QUIET`], how often we try a new local port.
+const REBIND_EVERY: Duration = Duration::from_millis(500);
+
+/// Nothing heard for this long: give up on the connection and make a new
+/// one. Shorter than the QUIC idle timeout, so we can still tell the host
+/// ([`CLOSE_LINK_LOST`]); long enough to ride out a 10 s outage.
+const GIVE_UP: Duration = Duration::from_secs(12);
 
 /// How long we keep trying after losing the connection, before asking.
 const RETRY_FOR: Duration = Duration::from_secs(60);
@@ -315,11 +332,19 @@ async fn link(
 }
 
 /// How long a connection attempt listens for the Mac on the LAN, alongside
-/// trying the remembered address. It costs nothing when the remembered
-/// address works (Tailscale, VPN, or simply unchanged). As long as an
-/// attempt at an address that went stale takes to time out (the 5 s idle
-/// timeout), so a slow mDNS answer still beats it.
+/// trying the remembered address, and how long the QUIC handshake at an
+/// address may take. Listening costs nothing when the remembered address
+/// works (Tailscale, VPN, or simply unchanged); as long as an attempt at an
+/// address that went stale takes to time out, so a slow mDNS answer still
+/// beats it.
 const LOOKUP: Duration = Duration::from_secs(5);
+
+/// Right after losing the connection we retry quickly, for [`FAST_FOR`]:
+/// a new attempt every half second, and one that gets no answer within
+/// [`FAST_ATTEMPT`] is dropped for a fresh one. A handshake sent into the
+/// outage would otherwise wait out QUIC's growing retransmit delays.
+const FAST_FOR: Duration = Duration::from_secs(10);
+const FAST_ATTEMPT: Duration = Duration::from_millis(1500);
 
 /// Opens a session with the paired host, trying two ways at once: the
 /// remembered address, and the address it announces on the LAN if that's
@@ -335,7 +360,7 @@ async fn open_located(
     wait: Duration,
 ) -> Result<Live, Failure> {
     let remembered = host.clone();
-    let stored = open(&remembered, id, options);
+    let stored = open(&remembered, id, options, wait);
     let located = async {
         let found = finder?.wait_for(&remembered.fingerprint, wait).await?;
         if same_address(&remembered.address, &found.address) {
@@ -345,7 +370,7 @@ async fn open_located(
             address: found.address.to_string(),
             ..remembered.clone()
         };
-        let result = open(&moved, id, options).await;
+        let result = open(&moved, id, options, wait).await;
         if let Err(f) = &result {
             warn!("no luck at {}: {}", moved.address, f.reason);
         }
@@ -396,17 +421,30 @@ fn same_address(remembered: &str, announced: &SocketAddr) -> bool {
     }
 }
 
-/// Backs off 0.5, 1, 2 s, then every 5 s, with some jitter so a restarted
-/// host isn't hit by every client at once.
-fn backoff(attempt: u32) -> Duration {
-    let base = match attempt {
-        1 => 500,
-        2 => 1000,
-        3 => 2000,
-        _ => 5000,
+/// The wait before the next attempt, `lost` after the connection was lost:
+/// every 0.5 s for the first [`FAST_FOR`], then 2 s, after half a minute
+/// every 5 s. With some jitter, so a restarted host isn't hit by every
+/// client at once.
+fn backoff(lost: Duration) -> Duration {
+    let base: u64 = if lost < FAST_FOR {
+        500
+    } else if lost < Duration::from_secs(30) {
+        2000
+    } else {
+        5000
     };
     let jitter = (now_us().rem_euclid(1000) as u64 * base / 5000) as i64 - base as i64 / 10;
     Duration::from_millis((base as i64 + jitter) as u64)
+}
+
+/// How long one attempt may take to get an answer, `lost` after the
+/// connection was lost.
+fn attempt_wait(lost: Duration) -> Duration {
+    if lost < FAST_FOR {
+        FAST_ATTEMPT
+    } else {
+        LOOKUP
+    }
 }
 
 /// Tries to get a new connection after a drop. `None` when trying can't help
@@ -430,11 +468,12 @@ async fn reconnect(
                 reason: reason.clone(),
             });
             tokio::select! {
-                _ = tokio::time::sleep(backoff(attempt)) => {}
+                _ = tokio::time::sleep(backoff(start.elapsed())) => {}
                 r = requests.retry.recv() => r?,
                 _ = requests.quit.recv() => return None,
             }
-            match open_located(host, id, options, finder, LOOKUP).await {
+            let wait = attempt_wait(start.elapsed());
+            match open_located(host, id, options, finder, wait).await {
                 Ok(live) => return Some(live),
                 Err(f) if !f.retry => {
                     *shared.ended.lock().unwrap() = Some(f.reason);
@@ -486,6 +525,7 @@ async fn dial(
     address: &str,
     id: &Identity,
     trust: HostTrust,
+    wait: Duration,
 ) -> Result<(quinn::Endpoint, quinn::Connection), Failure> {
     let any_paired = matches!(trust, HostTrust::OneOf(_));
     let addr = resolve(address)
@@ -503,7 +543,16 @@ async fn dial(
     let connecting = endpoint
         .connect(addr, quic::SERVER_NAME)
         .map_err(|e| Failure::permanent(e.to_string()))?;
-    let conn = match connecting.await {
+    let Ok(handshake) = tokio::time::timeout(wait, connecting).await else {
+        // Tell the host, in case only its answers got lost: it can drop
+        // the half-open connection at once.
+        endpoint.close(0u32.into(), b"no answer");
+        return Err(Failure::transient(format!(
+            "no answer from {address} ({addr}) within {:.1} s",
+            wait.as_secs_f32()
+        )));
+    };
+    let conn = match handshake {
         Ok(c) => c,
         Err(e) if format!("{e:?}").contains("NotPaired") && any_paired => {
             return Err(Failure::permanent(format!(
@@ -585,7 +634,7 @@ pub fn identify(address: &str, id: &Identity, paired: &[Host]) -> anyhow::Result
         .build()?;
     runtime.block_on(async {
         let fingerprints = paired.iter().map(|h| h.fingerprint).collect();
-        let (endpoint, conn) = dial(address, id, HostTrust::OneOf(fingerprints))
+        let (endpoint, conn) = dial(address, id, HostTrust::OneOf(fingerprints), LOOKUP)
             .await
             .map_err(|f| anyhow!(f.reason))?;
         let fp = quic::peer_fingerprint(&conn);
@@ -609,7 +658,7 @@ pub fn pair(address: &str, code: &str, our_name: &str, id: &Identity) -> anyhow:
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let (endpoint, conn) = dial(address, id, HostTrust::Pairing)
+        let (endpoint, conn) = dial(address, id, HostTrust::Pairing, LOOKUP)
             .await
             .map_err(|f| anyhow!(f.reason))?;
         let host_fp = quic::peer_fingerprint(&conn).context("the host showed no certificate")?;
@@ -668,8 +717,14 @@ struct Live {
 }
 
 /// Connects and does the handshake.
-async fn open(host: &Host, id: &Identity, options: Options) -> Result<Live, Failure> {
-    let (endpoint, conn) = dial(&host.address, id, HostTrust::Pinned(host.fingerprint)).await?;
+async fn open(
+    host: &Host,
+    id: &Identity,
+    options: Options,
+    wait: Duration,
+) -> Result<Live, Failure> {
+    let (endpoint, conn) =
+        dial(&host.address, id, HostTrust::Pinned(host.fingerprint), wait).await?;
     let lost = |e: &dyn std::fmt::Display| Failure::transient(format!("handshake: {e}"));
     let (mut ctl_send, mut ctl_recv) = conn.open_bi().await.map_err(|e| lost(&e))?;
     let hello = Hello {
@@ -825,6 +880,8 @@ impl Live {
             let _ = quic::send(&mut ctl_send, &ClientControl::ViewSize { width, height }).await;
         }
         let mut ping = tokio::time::interval(PING_EVERY);
+        // Since when we hear nothing, while we do; when we last rebound.
+        let mut outage: Option<(Instant, Instant)> = None;
         let video_end = loop {
             tokio::select! {
                 end = &mut frames_in => break end.unwrap_or(VideoEnd::Finished),
@@ -836,7 +893,9 @@ impl Live {
                     let _ = quic::send(&mut ctl_send, &ClientControl::RequestKeyframe).await;
                 }
                 Some(event) = requests.input.recv() => {
-                    let _ = quic::send(&mut input_stream, &event).await;
+                    if outage.is_none() {
+                        let _ = quic::send(&mut input_stream, &event).await;
+                    }
                 }
                 Some((width, height)) = requests.view.recv() => {
                     *shared.view.lock().unwrap() = Some((width, height));
@@ -853,6 +912,43 @@ impl Live {
                     }
                 }
                 _ = ping.tick() => {
+                    let quiet = Duration::from_micros(
+                        (now_us() - shared.last_heard.load(Ordering::Relaxed)).max(0) as u64,
+                    );
+                    match watch(quiet, outage.is_some()) {
+                        Watch::Fine => {}
+                        Watch::Out => {
+                            let now = Instant::now();
+                            let (_, rebound) = outage.get_or_insert_with(|| {
+                                say!(
+                                    "no answer from the Mac for {:.1} s; waiting for the network",
+                                    quiet.as_secs_f32()
+                                );
+                                (now - quiet, now - REBIND_EVERY)
+                            });
+                            if now - *rebound >= REBIND_EVERY {
+                                *rebound = now;
+                                if let Err(e) = quic::rebind(&endpoint) {
+                                    warn!("couldn't move to a new local port: {e}");
+                                }
+                            }
+                        }
+                        Watch::Back => {
+                            if let Some((since, _)) = outage.take() {
+                                say!(
+                                    "the Mac answers again after {:.1} s, same connection",
+                                    since.elapsed().as_secs_f32()
+                                );
+                            }
+                            // Frames were dropped on the way: start clean.
+                            let _ = quic::send(&mut ctl_send, &ClientControl::RequestKeyframe).await;
+                        }
+                        Watch::GiveUp => {
+                            frames_in.abort();
+                            conn.close(CLOSE_LINK_LOST.into(), b"no answer from the host");
+                            break VideoEnd::Silent(quiet);
+                        }
+                    }
                     let msg = ClientControl::Ping { client_us: now_us() as u64 };
                     let _ = quic::send(&mut ctl_send, &msg).await;
                 }
@@ -864,6 +960,10 @@ impl Live {
         }
         let failure = match (video_end, conn.close_reason()) {
             (VideoEnd::WindowClosed, _) => Failure::permanent(""),
+            (VideoEnd::Silent(quiet), _) => Failure::transient(format!(
+                "no answer from the Mac for {} s (network or host down)",
+                quiet.as_secs()
+            )),
             (_, Some(quinn::ConnectionError::TimedOut)) => {
                 Failure::transient("no answer from the Mac (network or host down)")
             }
@@ -894,12 +994,64 @@ enum VideoEnd {
     Finished,
     /// The window is gone; nobody wants frames.
     WindowClosed,
+    /// We heard nothing for [`GIVE_UP`] and closed the connection.
+    Silent(Duration),
     Error(String),
+}
+
+/// What to do about the link, after hearing nothing for `quiet`.
+#[derive(Debug, PartialEq, Eq)]
+enum Watch {
+    Fine,
+    /// No answer (for [`QUIET`]): an outage, or still one.
+    Out,
+    /// Answers again after an outage.
+    Back,
+    /// No answer for [`GIVE_UP`]: reconnect.
+    GiveUp,
+}
+
+fn watch(quiet: Duration, was_out: bool) -> Watch {
+    if quiet >= GIVE_UP {
+        Watch::GiveUp
+    } else if quiet >= QUIET {
+        Watch::Out
+    } else if was_out {
+        Watch::Back
+    } else {
+        Watch::Fine
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outages_are_waited_out_then_given_up() {
+        let ms = Duration::from_millis;
+        assert_eq!(watch(ms(300), false), Watch::Fine);
+        assert_eq!(watch(QUIET, false), Watch::Out);
+        assert_eq!(watch(ms(5000), true), Watch::Out);
+        assert_eq!(watch(ms(10), true), Watch::Back);
+        assert_eq!(watch(GIVE_UP, true), Watch::GiveUp);
+        // A 10 s outage stays on the connection, and the host still hears
+        // that we gave up before its own idle timeout.
+        assert!(Duration::from_secs(10) < GIVE_UP && GIVE_UP < quic::IDLE_TIMEOUT);
+        // Silence shows before pings could have gone missing by chance.
+        assert!(QUIET >= PING_EVERY * 4);
+    }
+
+    #[test]
+    fn reconnects_quickly_first() {
+        let secs = Duration::from_secs;
+        assert!(backoff(secs(0)) <= Duration::from_millis(550));
+        assert!(backoff(secs(9)) <= Duration::from_millis(550));
+        assert!(backoff(secs(15)) >= Duration::from_millis(1800));
+        assert!(backoff(secs(45)) >= Duration::from_millis(4500));
+        assert_eq!(attempt_wait(secs(1)), FAST_ATTEMPT);
+        assert_eq!(attempt_wait(secs(20)), LOOKUP);
+    }
 
     #[test]
     fn remembered_addresses_compare_with_announced_ones() {
