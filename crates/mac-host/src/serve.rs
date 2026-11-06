@@ -11,7 +11,9 @@ use std::sync::atomic::Ordering;
 
 use aetherdesk_proto::quic;
 use aetherdesk_proto::trust::Identity;
-use aetherdesk_proto::{Codec, DEFAULT_PORT, HostControl, picture_size, worth_resizing};
+use aetherdesk_proto::{
+    Codec, DEFAULT_PORT, DisplayMode, HostControl, picture_size, worth_resizing,
+};
 use anyhow::{Context, anyhow};
 use objc2_core_graphics::{
     CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess, CGRequestPostEventAccess,
@@ -268,6 +270,13 @@ async fn client(
         },
         move |width, height| {
             let _ = views.send((width, height));
+        },
+        // Switching the display mode needs the installed host's agent,
+        // which restores it however the session ends.
+        |mode| {
+            if mode == DisplayMode::Match {
+                println!("  display: match needs the installed host; serve stays at fit");
+            }
         },
     ));
     // No sound is no reason to end the session.

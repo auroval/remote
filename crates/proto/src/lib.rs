@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 12;
+pub const PROTOCOL_VERSION: u16 = 13;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"aetherdesk/1";
@@ -165,6 +165,40 @@ pub enum ClientControl {
     /// bigger than that ([`picture_size`]): fewer pixels to capture, encode,
     /// send and decode. Sent after [`Welcome`] and when the window changed.
     ViewSize { width: u32, height: u32 },
+    /// How the Mac's display relates to the window ([`DisplayMode`]). Sent
+    /// after [`Welcome`] and when the user switches; a session starts at
+    /// [`DisplayMode::Fit`].
+    Display(DisplayMode),
+}
+
+/// How the Mac's display relates to the client's window.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisplayMode {
+    /// The whole display, scaled to fit the window. The Mac doesn't change.
+    #[default]
+    Fit,
+    /// The Mac switches its display to the mode that best fits the window,
+    /// follows resizes, and goes back to its own mode when the session ends.
+    /// Rearranges windows and desktop icons on the Mac. Only in a user
+    /// session (also when locked); the login window stays at `Fit`.
+    Match,
+}
+
+impl DisplayMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            DisplayMode::Fit => "fit",
+            DisplayMode::Match => "match",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim() {
+            "fit" => Some(DisplayMode::Fit),
+            "match" => Some(DisplayMode::Match),
+            _ => None,
+        }
+    }
 }
 
 /// The picture size for a display shown in a window of `view` pixels: as
@@ -829,6 +863,15 @@ mod tests {
     }
 
     #[test]
+    fn display_modes_have_names() {
+        for m in [DisplayMode::Fit, DisplayMode::Match] {
+            assert_eq!(DisplayMode::parse(m.name()), Some(m));
+        }
+        assert_eq!(DisplayMode::parse("stretch"), None);
+        assert_eq!(DisplayMode::default(), DisplayMode::Fit);
+    }
+
+    #[test]
     fn small_changes_dont_resize() {
         assert!(!worth_resizing((2228, 1440), (2220, 1435)));
         assert!(worth_resizing((2228, 1440), (1600, 1034)));
@@ -877,6 +920,7 @@ mod tests {
             width: 2560,
             height: 1400,
         });
+        roundtrip(ClientControl::Display(DisplayMode::Match));
         roundtrip(HostControl::Clipboard(String::new()));
         roundtrip(HostControl::CursorImage(CursorImage {
             id: 7,

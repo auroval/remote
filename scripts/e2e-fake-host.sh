@@ -161,6 +161,19 @@ if grep -aq AETHERDESK_TEST_SOCKET "$B/aetherdesk"; then
   pw=$(hook state | sed -n 's/.*"picture":\[\([0-9]*\),.*/\1/p')
   [ "${pw:-0}" -ge 960 ] || fail "the picture didn't follow a resize: $(hook state)"
   [ "$(grep -c "  picture " "$log/host4.log")" -ge 2 ] || fail "the host didn't resize again: $(grep -i picture "$log/host4.log")"
+  # Display match (#111): offered on the LOCAL badge, D switches. The fake
+  # host then acts as a Mac in a mode of the window's size: the picture
+  # fills the window instead of keeping 16:9. Remembered for this host.
+  hook "resize 900 700" >/dev/null
+  hook "key Right_Ctrl" >/dev/null
+  hook state | grep -q '"key":"D","action":"Match the Mac to this window"' || fail "no display switch offered: $(hook state)"
+  hook "key D" >/dev/null
+  sleep 1
+  grep -q "display: match" "$log/host4.log" || fail "the host wasn't asked for match: $(grep display "$log/host4.log")"
+  hook state | grep -q '"window":\[900,700\],.*"picture":\[900,700\]' || fail "the picture didn't match the window: $(hook state)"
+  hook state | grep -q '"action":"Show the whole display"' || fail "no way back to fit offered: $(hook state)"
+  grep -q " match$" "$log/d/aetherdesk/display" || fail "match wasn't remembered"
+  hook "key Right_Ctrl" >/dev/null
   # Quitting must close the connection, not just go quiet: the Mac locks
   # right away only when the client says goodbye.
   kill -TERM $hooked

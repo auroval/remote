@@ -12,8 +12,8 @@ use aetherdesk_proto::trust::{Identity, Role, start_pake};
 use aetherdesk_proto::{
     AudioPacket, CLOSE_CODEC, CLOSE_LINK_LOST, CLOSE_NO_AGENT, CLOSE_NOT_PAIRED,
     CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN, CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl,
-    DEFAULT_PORT, Hello, HostControl, InputEvent, Intent, PROTOCOL_VERSION, PairMsg, SessionKind,
-    VideoFrame, Welcome,
+    DEFAULT_PORT, DisplayMode, Hello, HostControl, InputEvent, Intent, PROTOCOL_VERSION, PairMsg,
+    SessionKind, VideoFrame, Welcome,
 };
 use anyhow::{Context, anyhow, bail};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -92,6 +92,8 @@ pub struct Link {
     pub clipboard: Option<(UnboundedSender<String>, mpsc::Receiver<String>)>,
     /// Our window's size in pixels, for the host to size the picture to.
     pub view: UnboundedSender<(u32, u32)>,
+    /// Fit or match: how the Mac's display relates to our window.
+    pub display: UnboundedSender<DisplayMode>,
     /// The Mac's pointer: [`HostControl::CursorImage`] and friends.
     pub pointer: mpsc::Receiver<HostControl>,
     /// The Mac's sound, when asked for, in arrival order.
@@ -157,6 +159,8 @@ struct Shared {
     pointer: mpsc::Sender<HostControl>,
     /// The window size last sent, to send again after a reconnect.
     view: Arc<Mutex<Option<(u32, u32)>>>,
+    /// The display mode last asked for, to ask again after a reconnect.
+    display: Arc<Mutex<DisplayMode>>,
     /// The Mac's sound, for the player. `None` without sound.
     audio: Option<mpsc::Sender<AudioPacket>>,
 }
@@ -178,6 +182,8 @@ struct Requests {
     clipboard: UnboundedReceiver<String>,
     /// Our window's size in pixels, when it changed.
     view: UnboundedReceiver<(u32, u32)>,
+    /// Fit or match, when the user switched.
+    display: UnboundedReceiver<DisplayMode>,
     /// Microphone packets for the Mac.
     mic: UnboundedReceiver<AudioPacket>,
 }
@@ -257,6 +263,7 @@ async fn link(
     let (retry, retry_rx) = unbounded_channel();
     let (clipboard_out, clipboard_out_rx) = unbounded_channel();
     let (view, view_rx) = unbounded_channel();
+    let (display, display_rx) = unbounded_channel();
     let (clipboard_in_tx, clipboard_in) = mpsc::channel();
     let (pointer_tx, pointer) = mpsc::channel();
     let (audio_tx, audio) = mpsc::channel();
@@ -271,6 +278,7 @@ async fn link(
         clipboard: clipboard.then_some(clipboard_in_tx),
         pointer: pointer_tx,
         view: Arc::default(),
+        display: Arc::default(),
         audio: options.audio.then_some(audio_tx),
     };
     let mut requests = Requests {
@@ -280,6 +288,7 @@ async fn link(
         quit,
         clipboard: clipboard_out_rx,
         view: view_rx,
+        display: display_rx,
         mic: mic_rx,
     };
     let sent = ready.send(Ok(Link {
@@ -296,6 +305,7 @@ async fn link(
         closer,
         clipboard: clipboard.then_some((clipboard_out, clipboard_in)),
         view,
+        display,
         pointer,
         audio: options.audio.then_some(audio),
         mic: (options.mic && live.welcome.mic).then_some(mic_tx),
@@ -875,6 +885,9 @@ impl Live {
 
         // Out: keyframe requests and pings on control, input on its stream.
         // A new host session starts at full size until it hears our window.
+        // Before the size, so a host in match picks the mode for it.
+        let mode = *shared.display.lock().unwrap();
+        let _ = quic::send(&mut ctl_send, &ClientControl::Display(mode)).await;
         let last_view = *shared.view.lock().unwrap();
         if let Some((width, height)) = last_view {
             let _ = quic::send(&mut ctl_send, &ClientControl::ViewSize { width, height }).await;
@@ -901,6 +914,10 @@ impl Live {
                     *shared.view.lock().unwrap() = Some((width, height));
                     let msg = ClientControl::ViewSize { width, height };
                     let _ = quic::send(&mut ctl_send, &msg).await;
+                }
+                Some(mode) = requests.display.recv() => {
+                    *shared.display.lock().unwrap() = mode;
+                    let _ = quic::send(&mut ctl_send, &ClientControl::Display(mode)).await;
                 }
                 Some(text) = requests.clipboard.recv() => {
                     let _ = quic::send(&mut ctl_send, &ClientControl::Clipboard(text)).await;

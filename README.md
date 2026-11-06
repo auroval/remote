@@ -154,6 +154,8 @@ The installed host announces itself on the LAN (Bonjour, `_aetherdesk._udp`), so
 
 The Mac sends pictures at the size of your window (in pixels), not at its own full resolution: fewer pixels to capture, encode, send and decode. Resize the window and the picture follows a moment later.
 
+That's `fit`: the Mac's whole display, scaled into the window. In a small window small text gets soft. `aetherdesk --display match` instead switches the Mac's display to the resolution that best fits the window (the largest that fits it pixel for pixel, HiDPI where there is one), follows the window when you resize it (once it settles, about a second), and switches back when the session ends: when you disconnect, when the client or the agent crashes (the next agent puts it back), and before the Mac locks. **Changing the resolution rearranges windows and desktop icons on the Mac**, as it does when you change it in System Settings. Press **D** while input is local (Right Ctrl) to switch between fit and match during a session; the choice is remembered per Mac. Match needs the installed host and a logged-in session (also when locked); at the login window the picture stays at fit, and `serve` always fits.
+
 ### Keyboard and the host key
 
 While the window has the keyboard ("grabbed"), every key goes to the Mac, including the ones your compositor would take, such as `$mainMod` (Super) combinations on Hyprland: Cmd+Tab, Spotlight and the rest work on the Mac. **Right Ctrl** gives keyboard and mouse back to Linux, and pressing it again (or clicking the picture) grabs them again; the badge in the window says which side has them. The host key itself never reaches the Mac.
