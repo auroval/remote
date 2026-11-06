@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 11;
+pub const PROTOCOL_VERSION: u16 = 12;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"aetherdesk/1";
@@ -44,6 +44,10 @@ pub const CLOSE_PAIRING_CLOSED: u32 = 5;
 pub const CLOSE_WRONG_CODE: u32 = 6;
 /// The client decodes none of the video formats the host can send.
 pub const CLOSE_CODEC: u32 = 7;
+/// Sent by the client: it heard nothing from the host for too long and
+/// gives up on this connection. The link died, the client didn't leave:
+/// the host treats it like a timeout (it may be back soon).
+pub const CLOSE_LINK_LOST: u32 = 8;
 
 /// Upper bound for one message body, so a corrupt length can't make us
 /// allocate gigabytes. A 4K keyframe is well under this.
@@ -447,13 +451,20 @@ pub mod quic {
         Arc::new(rustls::crypto::ring::default_provider())
     }
 
+    /// How long a connection survives without hearing anything. Long
+    /// enough to ride out a short outage (Wi-Fi roaming, a router hiccup) on
+    /// the same connection: then only the missing packets follow, no new
+    /// handshake and session. The client gives up sooner on its own
+    /// ([`CLOSE_LINK_LOST`]), and recovers faster than QUIC alone would
+    /// after an outage ([`rebind`]).
+    pub const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+
     fn transport() -> Arc<quinn::TransportConfig> {
         let mut t = quinn::TransportConfig::default();
-        // A dead link shows within ~5 s: the client then reconnects, and
-        // the host stops capturing. Keep-alives every second keep a quiet
-        // link (still screen, no input) from looking dead.
+        // Keep-alives every second keep a quiet link (still screen, no
+        // input) from looking dead.
         t.keep_alive_interval(Some(Duration::from_secs(1)));
-        t.max_idle_timeout(Some(Duration::from_secs(5).try_into().expect("in range")));
+        t.max_idle_timeout(Some(IDLE_TIMEOUT.try_into().expect("in range")));
         // No segmentation offload (GSO): the kernel refuses a batch whose
         // segments are bigger than the path MTU even when fragmenting is
         // allowed, so on a narrow path everything after the handshake would
@@ -500,6 +511,31 @@ pub mod quic {
             quinn::Endpoint::new(quinn::EndpointConfig::default(), server, socket, runtime)?;
         allow_fragments(&same, addr.is_ipv6());
         Ok(endpoint)
+    }
+
+    /// Moves a client endpoint to a new UDP socket (a new local port), so
+    /// its connections continue from there: a connection migration.
+    ///
+    /// After an outage QUIC on its own is slow to notice the link is back:
+    /// both sides back off their retransmissions exponentially, so after
+    /// 10 s of silence the next try can be seconds away, and the host has
+    /// its congestion window full of lost packets until then. A packet from
+    /// a new address makes the host start a fresh path right away (nothing
+    /// in flight there yet) and send at once. So while the client hears
+    /// nothing it rebinds every so often; the first rebind after the link
+    /// is back gets the picture going again within a round trip or two.
+    pub fn rebind(endpoint: &quinn::Endpoint) -> std::io::Result<()> {
+        let local = endpoint.local_addr()?;
+        let any: SocketAddr = if local.is_ipv6() {
+            (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+        } else {
+            (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+        };
+        let socket = std::net::UdpSocket::bind(any)?;
+        let same = socket.try_clone()?;
+        endpoint.rebind(socket)?;
+        allow_fragments(&same, any.is_ipv6());
+        Ok(())
     }
 
     /// Turns off "don't fragment" on `socket`, as far as the platform lets

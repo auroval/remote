@@ -2,6 +2,7 @@
 //! messages, input and video. Shared by `serve` and the daemon; what's
 //! behind it (a local capture, or an agent) is up to the caller.
 
+use std::collections::VecDeque;
 use std::ffi::CStr;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -15,7 +16,7 @@ use aetherdesk_proto::{
     InputEvent, Intent, MAX_CLIPBOARD, PROTOCOL_VERSION, PairMsg, VideoFrame, Welcome, quic,
 };
 use anyhow::{Context, bail};
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::sync::mpsc::{self, UnboundedReceiver, unbounded_channel};
 
 use crate::encoder::host_time;
 use crate::stream::micros;
@@ -44,6 +45,117 @@ pub async fn until_shutdown(
     endpoint.close(CLOSE_SHUTDOWN.into(), b"host is shutting down");
     let _ = tokio::time::timeout(Duration::from_secs(1), endpoint.wait_idle()).await;
     Ok(())
+}
+
+/// How long a client's QUIC handshake may take, and then its hello.
+const HANDSHAKE: Duration = Duration::from_secs(5);
+
+/// Completes incoming handshakes side by side, each within [`HANDSHAKE`],
+/// and passes on the connections that made it, in the order they did.
+///
+/// Not one after the other in the accept loop: after an outage a client
+/// leaves handshakes behind that it gave up on (it starts a fresh one every
+/// so often), and each would hold up the loop until it timed out, with the
+/// one that works waiting behind them. And while a session runs, a client
+/// that comes back on a new connection is seen at once ([`serve_one`]).
+pub fn handshakes(endpoint: &quinn::Endpoint) -> mpsc::Receiver<quinn::Connection> {
+    let (tx, rx) = mpsc::channel(16);
+    let endpoint = endpoint.clone();
+    tokio::spawn(async move {
+        while let Some(incoming) = endpoint.accept().await {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let peer = incoming.remote_address();
+                let connecting = match incoming.accept() {
+                    Ok(c) => c,
+                    Err(e) => return eprintln!("{peer}: handshake failed: {e}"),
+                };
+                match tokio::time::timeout(HANDSHAKE, connecting).await {
+                    Ok(Ok(conn)) => {
+                        let _ = tx.send(conn).await;
+                    }
+                    Ok(Err(e)) => eprintln!("{peer}: handshake failed: {e}"),
+                    Err(_) => eprintln!(
+                        "{peer}: handshake: no answer within {} s",
+                        HANDSHAKE.as_secs()
+                    ),
+                }
+            });
+        }
+    });
+    rx
+}
+
+/// The next connection to serve: one that waited during the last session,
+/// else a new one. `None` once the endpoint is closed.
+pub async fn next_connection(
+    conns: &mut mpsc::Receiver<quinn::Connection>,
+    waiting: &mut VecDeque<quinn::Connection>,
+) -> Option<quinn::Connection> {
+    loop {
+        let conn = match waiting.pop_front() {
+            Some(c) => c,
+            None => conns.recv().await?,
+        };
+        // A client that gave up while it waited.
+        if conn.close_reason().is_none() {
+            return Some(conn);
+        }
+    }
+}
+
+/// [`admit`], within [`HANDSHAKE`]: a client that connects and says
+/// nothing doesn't hold up the others.
+pub async fn admit_soon(
+    conn: &quinn::Connection,
+    store: &Store,
+    host: &Fingerprint,
+) -> anyhow::Result<Admitted> {
+    match tokio::time::timeout(HANDSHAKE, admit(conn, store, host)).await {
+        Ok(r) => r,
+        Err(_) => {
+            conn.close(0u32.into(), b"no hello");
+            bail!("no hello within {} s", HANDSHAKE.as_secs())
+        }
+    }
+}
+
+/// Runs `session`, the session of the client with certificate `client` on
+/// `conn`, one client at a time: other clients' new connections wait in
+/// `waiting`. When the same client connects again meanwhile, its old
+/// connection is dead to it (it gave up after an outage, or restarted), so
+/// `conn` is closed to end the session at once, rather than after the idle
+/// timeout, and the new connection goes first. Returns the session's result
+/// and whether it was replaced that way.
+pub async fn serve_one<T>(
+    conn: &quinn::Connection,
+    client: Fingerprint,
+    conns: &mut mpsc::Receiver<quinn::Connection>,
+    waiting: &mut VecDeque<quinn::Connection>,
+    session: impl Future<Output = T>,
+) -> (T, bool) {
+    tokio::pin!(session);
+    let mut replaced = false;
+    let mut open = true;
+    loop {
+        tokio::select! {
+            r = &mut session => return (r, replaced),
+            c = conns.recv(), if open => match c {
+                Some(new) if !replaced && quic::peer_fingerprint(&new) == Some(client) => {
+                    println!(
+                        "{}: the client is back from {}; ending the old connection",
+                        conn.remote_address(),
+                        new.remote_address()
+                    );
+                    conn.close(0u32.into(), b"replaced by a new connection");
+                    waiting.push_front(new);
+                    replaced = true;
+                }
+                Some(other) => waiting.push_back(other),
+                None => open = false,
+            },
+        }
+    }
 }
 
 /// What came of a new connection.
@@ -381,4 +493,58 @@ pub fn local_addresses() -> Vec<(String, Ipv4Addr)> {
     }
     unsafe { libc::freeifaddrs(list) };
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use aetherdesk_proto::quic::HostTrust;
+    use aetherdesk_proto::trust::Identity;
+
+    use super::*;
+
+    async fn connect(ep: &quinn::Endpoint, to: SocketAddr) -> quinn::Connection {
+        ep.connect(to, quic::SERVER_NAME).unwrap().await.unwrap()
+    }
+
+    /// A client that reconnects (after giving up on a dead link) ends its
+    /// old session at once; another client waits its turn.
+    #[tokio::test]
+    async fn a_new_connection_from_the_same_client_replaces_the_old() {
+        let host = Identity::generate().unwrap();
+        let (me, other) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let local: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let server = quic::server_endpoint(local, &host).unwrap();
+        let addr = server.local_addr().unwrap();
+        let pinned = || HostTrust::Pinned(host.fingerprint());
+        let mine = quic::client_endpoint(local, &me, pinned()).unwrap();
+        let theirs = quic::client_endpoint(local, &other, pinned()).unwrap();
+
+        let mut conns = handshakes(&server);
+        let mut waiting = VecDeque::new();
+        let _first = connect(&mine, addr).await;
+        let old = next_connection(&mut conns, &mut waiting).await.unwrap();
+
+        let session = {
+            let old = old.clone();
+            async move { old.closed().await }
+        };
+        let (_other, _again) = tokio::join!(connect(&theirs, addr), async {
+            // After the other client, so it's queued first.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            connect(&mine, addr).await
+        });
+        let (_, replaced) = tokio::time::timeout(
+            Duration::from_secs(5),
+            serve_one(&old, me.fingerprint(), &mut conns, &mut waiting, session),
+        )
+        .await
+        .expect("the old session should end");
+        assert!(replaced);
+        let next = next_connection(&mut conns, &mut waiting).await.unwrap();
+        assert_eq!(quic::peer_fingerprint(&next), Some(me.fingerprint()));
+        let after = next_connection(&mut conns, &mut waiting).await.unwrap();
+        assert_eq!(quic::peer_fingerprint(&after), Some(other.fingerprint()));
+    }
 }

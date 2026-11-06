@@ -22,6 +22,13 @@
 //!
 //! `--announce NAME` announces it on the LAN over mDNS, like the Mac daemon.
 //!
+//! `--outage AT:FOR` cuts the network for FOR seconds, AT seconds into the
+//! first session: everything from the host to the client is lost (like the
+//! netem tests on traffic from the Mac); `AT:FOR:both` loses both ways. The
+//! host then listens behind a small relay on `--port`, which acts like a NAT
+//! (each client port gets its own port towards the host), so a client that
+//! moves to a new port shows up as one.
+//!
 //! With clipboard sync on, it hands every text the client copies back with
 //! " ✓" added, as if the Mac copied that.
 //!
@@ -117,6 +124,7 @@ mod linux {
         let switch_every: Option<u64> = get("--switch-every").map(|n| n.parse()).transpose()?;
         let close_code: u32 = get("--close-code").map_or(Ok(0), |c| c.parse())?;
         let state = get("--state").map(std::path::PathBuf::from);
+        let outage = get("--outage").map(|o| Outage::parse(o)).transpose()?;
 
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
@@ -125,8 +133,14 @@ mod linux {
                 None => Identity::generate()?,
             };
             let host = id.fingerprint();
-            let endpoint = quic::server_endpoint(SocketAddr::from(([0, 0, 0, 0], port)), &id)
-                .map_err(|e| anyhow!("{e}"))?;
+            let listen = match &outage {
+                Some(_) => SocketAddr::from(([127, 0, 0, 1], 0)),
+                None => SocketAddr::from(([0, 0, 0, 0], port)),
+            };
+            let endpoint = quic::server_endpoint(listen, &id).map_err(|e| anyhow!("{e}"))?;
+            if let Some(o) = &outage {
+                relay(port, endpoint.local_addr()?, o.clone()).await?;
+            }
             // Lives as long as the host: dropping it stops answering.
             let _mdns = match get("--announce") {
                 Some(name) => Some(announce(name, port, &host)?),
@@ -161,6 +175,9 @@ mod linux {
                 if audio {
                     beep(conn.clone());
                 }
+                if let Some(o) = &outage {
+                    o.arm();
+                }
                 let opts = (frames, format, switch_every, close_code, clipboard, codec);
                 match session(&conn, send, recv, opts).await {
                     Ok(()) => println!("disconnected"),
@@ -169,6 +186,11 @@ mod linux {
                 // How the real daemon decides between locking now and
                 // waiting for the client to come back.
                 match conn.close_reason() {
+                    Some(quinn::ConnectionError::ApplicationClosed(c))
+                        if c.error_code == aetherdesk_proto::CLOSE_LINK_LOST.into() =>
+                    {
+                        println!("  the client lost the link")
+                    }
                     Some(quinn::ConnectionError::ApplicationClosed(_)) => {
                         println!("  the client said goodbye")
                     }
@@ -183,6 +205,114 @@ mod linux {
             }
             Ok(())
         })
+    }
+
+    /// A network outage to fake (`--outage`), once.
+    #[derive(Clone)]
+    struct Outage {
+        at: Duration,
+        length: Duration,
+        both: bool,
+        /// When it starts and ends, once the first session is up.
+        window: std::sync::Arc<OnceLock<(Instant, Instant)>>,
+    }
+
+    impl Outage {
+        fn parse(spec: &str) -> anyhow::Result<Self> {
+            let mut parts = spec.split(':');
+            let mut secs = || -> anyhow::Result<Duration> {
+                let s = parts.next().context("--outage wants AT:FOR[:both]")?;
+                Ok(Duration::from_secs_f64(s.parse()?))
+            };
+            let (at, length) = (secs()?, secs()?);
+            let both = match parts.next() {
+                None => false,
+                Some("both") => true,
+                Some(other) => bail!("--outage: {other:?}? Only `both` goes there"),
+            };
+            Ok(Self {
+                at,
+                length,
+                both,
+                window: Default::default(),
+            })
+        }
+
+        /// A session started: the outage counts from here (the first time).
+        fn arm(&self) {
+            let start = Instant::now() + self.at;
+            if self.window.set((start, start + self.length)).is_ok() {
+                println!(
+                    "  outage in {:.1} s, for {:.1} s{}",
+                    self.at.as_secs_f64(),
+                    self.length.as_secs_f64(),
+                    if self.both { ", both ways" } else { "" }
+                );
+            }
+        }
+
+        /// Whether a packet in this direction is lost now.
+        fn lost(&self, to_client: bool) -> bool {
+            let Some(&(from, until)) = self.window.get() else {
+                return false;
+            };
+            let now = Instant::now();
+            (to_client || self.both) && now >= from && now < until
+        }
+    }
+
+    /// Relays UDP between clients on `port` and the host at `host`, losing
+    /// packets during the `outage`. Each client address gets its own socket
+    /// towards the host, like a NAT.
+    async fn relay(port: u16, host: SocketAddr, outage: Outage) -> anyhow::Result<()> {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        use tokio::net::UdpSocket;
+        let front = Arc::new(UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], port))).await?);
+        tokio::spawn(async move {
+            let mut backs: HashMap<SocketAddr, Arc<UdpSocket>> = HashMap::new();
+            let mut buf = vec![0u8; 65536];
+            let mut logged = false;
+            loop {
+                let Ok((n, client)) = front.recv_from(&mut buf).await else {
+                    continue;
+                };
+                let back = match backs.get(&client) {
+                    Some(b) => b.clone(),
+                    None => {
+                        let Ok(back) = UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await
+                        else {
+                            continue;
+                        };
+                        if back.connect(host).await.is_err() {
+                            continue;
+                        }
+                        let back = Arc::new(back);
+                        backs.insert(client, back.clone());
+                        let (front, from_host, outage) =
+                            (front.clone(), back.clone(), outage.clone());
+                        tokio::spawn(async move {
+                            let mut buf = vec![0u8; 65536];
+                            while let Ok(n) = from_host.recv(&mut buf).await {
+                                if !outage.lost(true) {
+                                    let _ = front.send_to(&buf[..n], client).await;
+                                }
+                            }
+                        });
+                        back
+                    }
+                };
+                let lost = outage.lost(true);
+                if lost != logged {
+                    println!("  network {}", if lost { "out" } else { "back" });
+                    logged = lost;
+                }
+                if !outage.lost(false) {
+                    let _ = back.send(&buf[..n]).await;
+                }
+            }
+        });
+        Ok(())
     }
 
     /// Pairing state, in memory.

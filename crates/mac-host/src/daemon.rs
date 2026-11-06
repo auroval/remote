@@ -9,6 +9,7 @@
 //! user once logged in. A client stays connected across login and logout;
 //! the daemon switches it to the new session's agent.
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -16,9 +17,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aetherdesk_proto::CLOSE_NO_AGENT;
 use aetherdesk_proto::trust::Identity;
 use aetherdesk_proto::{AudioPacket, Codec, HostControl, SessionKind, VideoFrame};
+use aetherdesk_proto::{CLOSE_LINK_LOST, CLOSE_NO_AGENT};
 use aetherdesk_proto::{discovery, quic};
 use anyhow::{Context, anyhow, bail};
 use tokio::net::{UnixListener, UnixStream};
@@ -121,15 +122,17 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
         }
     };
 
-    // One client at a time: others wait in the accept queue.
+    // One client at a time: others wait their turn.
     let accept = async {
+        let mut conns = session::handshakes(&endpoint);
+        let mut waiting = VecDeque::new();
         // A lock that waits for a client that lost its link: it may be back
         // within LOCK_GRACE.
         let mut pending_lock: Option<tokio::time::Instant> = None;
         loop {
-            let incoming = tokio::select! {
-                i = endpoint.accept() => match i {
-                    Some(i) => i,
+            let conn = tokio::select! {
+                c = session::next_connection(&mut conns, &mut waiting) => match c {
+                    Some(c) => c,
                     None => break,
                 },
                 () = sleep_until(pending_lock), if pending_lock.is_some() => {
@@ -138,16 +141,9 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
                     continue;
                 }
             };
-            let conn = match incoming.await {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("handshake failed: {e}");
-                    continue;
-                }
-            };
             let peer = conn.remote_address();
             println!("{peer}: connected");
-            match session::admit(&conn, store, &host).await {
+            match session::admit_soon(&conn, store, &host).await {
                 Ok(Admitted::Session {
                     send,
                     recv,
@@ -168,11 +164,17 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
                         audio,
                         mic,
                     };
-                    match client(&conn, send, recv, &agents, s, wants).await {
+                    let session = client(&conn, send, recv, &agents, s, wants);
+                    let (result, replaced) =
+                        session::serve_one(&conn, c.fingerprint, &mut conns, &mut waiting, session)
+                            .await;
+                    match result {
                         Ok(()) => println!("{peer}: disconnected"),
                         Err(e) => eprintln!("{peer}: {e:#}"),
                     }
-                    if link_lost(conn.close_reason()) {
+                    if replaced {
+                        // Its new connection is next; nothing to lock.
+                    } else if link_lost(conn.close_reason()) {
                         println!(
                             "  link lost; locking the screen in {} s unless the client is back",
                             LOCK_GRACE.as_secs()
@@ -193,16 +195,21 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
 }
 
 /// Did the session end because the link died (the client may come back),
-/// rather than the client leaving or the session failing here?
+/// rather than the client leaving or the session failing here? A client
+/// that hears nothing for a while says so itself ([`CLOSE_LINK_LOST`]),
+/// before the connection times out.
 fn link_lost(reason: Option<quinn::ConnectionError>) -> bool {
-    matches!(
-        reason,
+    match reason {
         Some(
             quinn::ConnectionError::TimedOut
-                | quinn::ConnectionError::Reset
-                | quinn::ConnectionError::TransportError(_)
-        )
-    )
+            | quinn::ConnectionError::Reset
+            | quinn::ConnectionError::TransportError(_),
+        ) => true,
+        Some(quinn::ConnectionError::ApplicationClosed(c)) => {
+            c.error_code == CLOSE_LINK_LOST.into()
+        }
+        _ => false,
+    }
 }
 
 async fn sleep_until(at: Option<tokio::time::Instant>) {
@@ -1137,6 +1144,14 @@ mod tests {
         use quinn::ConnectionError as E;
         assert!(link_lost(Some(E::TimedOut)));
         assert!(link_lost(Some(E::Reset)));
+        let closed = |code: u32| {
+            Some(E::ApplicationClosed(quinn::ApplicationClose {
+                error_code: code.into(),
+                reason: Default::default(),
+            }))
+        };
+        assert!(link_lost(closed(CLOSE_LINK_LOST)));
+        assert!(!link_lost(closed(0)));
         assert!(!link_lost(Some(E::LocallyClosed)));
         assert!(!link_lost(None));
     }
