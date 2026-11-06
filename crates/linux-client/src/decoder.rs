@@ -244,6 +244,9 @@ pub struct Decoder {
     downloaded: ffmpeg::frame::Video,
     /// For 4:4:4 pictures, made on the first one.
     to_bgra: Option<ToBgra>,
+    /// #113 experiments: `AETHERDESK_DUMP_FRAME`, `AETHERDESK_SHARPEN`.
+    dump: Option<crate::dump::Dump>,
+    sharpen: Option<crate::sharpen::Sharpen>,
 }
 
 /// Turns 4:4:4 pictures into BGRA on all cores, using the colour matrix and
@@ -296,6 +299,8 @@ impl Decoder {
             frame: ffmpeg::frame::Video::empty(),
             downloaded: ffmpeg::frame::Video::empty(),
             to_bgra: None,
+            dump: crate::dump::Dump::from_env(),
+            sharpen: crate::sharpen::Sharpen::from_env(),
         })
     }
 
@@ -358,7 +363,7 @@ impl Decoder {
                 ),
                 Layout::Bgra => ([plane(0), Vec::new(), Vec::new()], [f.stride(0), 0, 0]),
             };
-            out(Picture {
+            let mut picture = Picture {
                 width: f.width(),
                 height: f.height(),
                 layout,
@@ -368,7 +373,14 @@ impl Decoder {
                     decoded: now_us(),
                     ..timing
                 },
-            });
+            };
+            if let Some(d) = &mut self.dump {
+                d.offer(&picture);
+            }
+            if let Some(s) = &mut self.sharpen {
+                s.apply(&mut picture);
+            }
+            out(picture);
         }
         Ok(())
     }

@@ -12,7 +12,7 @@ name = "aether-agent"
 path = "src/main.rs"
 
 [dependencies]
-aetherdesk-proto = { workspace = true, features = ["quic"] }
+aetherdesk-proto = { workspace = true, features = ["quic", "still"] }
 anyhow.workspace = true
 serde.workspace = true
 thiserror.workspace = true

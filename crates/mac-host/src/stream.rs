@@ -57,7 +57,12 @@ impl Stream {
             width: size.0,
             height: size.1,
             fps: s.fps,
-            bitrate_bps: s.mbps.saturating_mul(1_000_000),
+            bitrate_bps: crate::tuning::bitrate_bps(
+                s.mbps,
+                size,
+                s.fps,
+                crate::tuning::Tuning::get().bpp,
+            ),
             max_in_flight: s.in_flight,
         };
         let pipeline = Arc::new(Pipeline::default());

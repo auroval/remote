@@ -16,7 +16,7 @@ path = "src/main.rs"
 test-hooks = ["dep:png"]
 
 [dependencies]
-aetherdesk-proto = { workspace = true, features = ["quic"] }
+aetherdesk-proto = { workspace = true, features = ["quic", "still"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 anyhow.workspace = true
@@ -28,6 +28,10 @@ sdl3 = "0.20"
 tokio.workspace = true
 ab_glyph = "0.2"
 mdns-sd = { version = "0.21", default-features = false }
+
+[dev-dependencies]
+# Reading back saved pictures (src/dump.rs).
+png = "0.18"
 
 [lints]
 workspace = true

@@ -27,6 +27,8 @@ mod decoder;
 #[cfg(target_os = "linux")]
 mod discover;
 #[cfg(target_os = "linux")]
+mod dump;
+#[cfg(target_os = "linux")]
 mod frames;
 #[cfg(target_os = "linux")]
 mod input;
@@ -42,6 +44,8 @@ mod net;
 mod overlay;
 #[cfg(target_os = "linux")]
 mod pointer;
+#[cfg(target_os = "linux")]
+mod sharpen;
 #[cfg(target_os = "linux")]
 mod window;
 

@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 
 use block2::RcBlock;
-use dispatch2::{DispatchQueue, DispatchRetained};
+use dispatch2::{DispatchQueue, DispatchRetained, DispatchTime};
 use objc2_core_foundation::{
     CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType, Type,
 };
@@ -29,7 +29,8 @@ use objc2_core_video::{CVImageBuffer, kCVImageBufferYCbCrMatrix_ITU_R_709_2};
 use objc2_video_toolbox::{
     VTCompressionSession, VTEncodeInfoFlags, VTSessionSetProperty,
     kVTCompressionPropertyKey_AllowFrameReordering, kVTCompressionPropertyKey_AverageBitRate,
-    kVTCompressionPropertyKey_ExpectedFrameRate, kVTCompressionPropertyKey_MaxFrameDelayCount,
+    kVTCompressionPropertyKey_ExpectedFrameRate, kVTCompressionPropertyKey_MaxAllowedFrameQP,
+    kVTCompressionPropertyKey_MaxFrameDelayCount,
     kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
     kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
     kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_RealTime,
@@ -95,6 +96,8 @@ struct Shared {
     gate: Mutex<Gate>,
     /// Where finished frames free their slot and pending frames go in.
     queue: DispatchRetained<DispatchQueue>,
+    /// `AETHERDESK_REFINE`: how often to encode a still picture again.
+    refine: u32,
 }
 
 // SAFETY: a VTCompressionSession and the CVImageBuffers it encodes are
@@ -111,6 +114,14 @@ struct Gate {
     /// A frame waiting for a free slot, with when it was delivered.
     pending: Option<(CFRetained<CVImageBuffer>, CMTime, f64)>,
     stopped: bool,
+    /// With [`Shared::refine`]: the newest captured frame, a count of
+    /// captured frames, and how many more times the newest may go in again.
+    /// Also the newest timestamp submitted: refinements are stamped with
+    /// the time they go in, and timestamps must keep rising.
+    last: Option<CFRetained<CVImageBuffer>>,
+    generation: u64,
+    refines_left: u32,
+    last_pts: f64,
 }
 
 fn check(status: i32, what: &str) -> Result<(), String> {
@@ -185,6 +196,16 @@ impl Encoder {
                 name,
             )
         };
+        let tuning = crate::tuning::Tuning::get();
+        if tuning != &crate::tuning::Tuning::default() {
+            println!(
+                "encoder: {}x{} {} at {:.1} Mbit/s",
+                s.width,
+                s.height,
+                s.codec,
+                s.bitrate_bps as f64 / 1e6
+            );
+        }
         unsafe {
             set(kVTCompressionPropertyKey_RealTime, yes(), "RealTime")?;
             set(
@@ -235,9 +256,16 @@ impl Encoder {
             );
             optional(
                 kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
-                yes(),
+                if tuning.quality_first { no() } else { yes() },
                 "PrioritizeEncodingSpeedOverQuality",
             );
+            if let Some(qp) = tuning.max_qp {
+                optional(
+                    kVTCompressionPropertyKey_MaxAllowedFrameQP,
+                    &CFNumber::new_i32(qp as i32),
+                    "MaxAllowedFrameQP",
+                );
+            }
             check(
                 session.prepare_to_encode_frames(),
                 "VTCompressionSessionPrepareToEncodeFrames",
@@ -255,6 +283,7 @@ impl Encoder {
                 max_in_flight: s.max_in_flight.max(1),
                 gate: Mutex::new(Gate::default()),
                 queue: DispatchQueue::new("nl.stormlantern.aetherdesk.encoder", None),
+                refine: tuning.refine,
             }),
         })
     }
@@ -279,6 +308,11 @@ impl Encoder {
         let mut gate = self.shared.gate.lock().unwrap();
         if gate.stopped {
             return;
+        }
+        if self.shared.refine > 0 {
+            gate.last = Some(image.retain());
+            gate.generation += 1;
+            gate.refines_left = self.shared.refine;
         }
         if gate.in_flight >= self.shared.max_in_flight {
             if gate
@@ -308,6 +342,7 @@ impl Encoder {
             let mut gate = self.shared.gate.lock().unwrap();
             gate.stopped = true;
             gate.pending = None;
+            gate.last = None;
         }
         unsafe { self.shared.session.complete_frames(kCMTimeInvalid) };
     }
@@ -328,6 +363,15 @@ impl Shared {
         pts: CMTime,
         delivered: f64,
     ) {
+        let mut pts = pts;
+        if this.refine > 0 {
+            // A refinement may have gone in after this was captured.
+            let secs = unsafe { pts.seconds() };
+            if secs <= gate.last_pts {
+                pts = unsafe { CMTime::with_seconds(gate.last_pts + 1e-6, 1_000_000_000) };
+            }
+            gate.last_pts = unsafe { pts.seconds() };
+        }
         gate.in_flight += 1;
         let submitted = host_time();
         let props = this.force_keyframe.swap(false, Ordering::Relaxed).then(|| {
@@ -394,7 +438,36 @@ impl Shared {
         }
         if let Some((image, pts, delivered)) = gate.pending.take() {
             Shared::submit(this, &mut gate, &image, pts, delivered);
+        } else if this.refine > 0 && gate.refines_left > 0 {
+            let generation = gate.generation;
+            let shared = this.clone();
+            let when =
+                DispatchTime::try_from(crate::tuning::REFINE_AFTER).unwrap_or(DispatchTime::NOW);
+            let _ = this
+                .queue
+                .after(when, move || Shared::refine(&shared, generation));
         }
+    }
+
+    /// `AETHERDESK_REFINE`: nothing new was captured since `generation`, so
+    /// the newest frame goes in again and the encoder can add detail. Its
+    /// timestamp is now, so the client's latency figures stay true.
+    fn refine(this: &Arc<Self>, generation: u64) {
+        let mut gate = this.gate.lock().unwrap();
+        if gate.stopped
+            || gate.generation != generation
+            || gate.refines_left == 0
+            || gate.in_flight > 0
+            || gate.pending.is_some()
+        {
+            return;
+        }
+        let Some(image) = gate.last.clone() else {
+            return;
+        };
+        gate.refines_left -= 1;
+        let now = unsafe { CMClock::host_time_clock().time() };
+        Shared::submit(this, &mut gate, &image, now, host_time());
     }
 }
 
