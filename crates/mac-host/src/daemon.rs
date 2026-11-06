@@ -403,6 +403,7 @@ async fn agent_connection(id: u64, stream: UnixStream, agents: &Agents) -> anyho
         if let FromAgent::Frame(_) = msg {
             // The client is behind: drop, and resync with a keyframe.
             if let Err(TrySendError::Full(_)) = client.try_send(msg) {
+                session::DROPPED_BEHIND.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let _ = agent.to.send(ToAgent::RequestKeyframe);
             }
         } else {

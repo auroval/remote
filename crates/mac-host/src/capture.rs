@@ -131,6 +131,7 @@ define_class!(
             }
             // Frames without an image are "nothing changed" ticks.
             let Some(image) = (unsafe { sample.image_buffer() }) else {
+                self.ivars().encoder.idle();
                 return;
             };
             let pts = unsafe { sample.presentation_time_stamp() };
@@ -226,7 +227,7 @@ impl Capture {
             } else {
                 kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
             });
-            config.setMinimumFrameInterval(CMTime::new(1, fps as i32));
+            config.setMinimumFrameInterval(CMTime::new(frame_interval_us(fps), 1_000_000));
             config.setQueueDepth(5);
             config.setShowsCursor(shows_cursor);
         }
@@ -266,6 +267,32 @@ impl Capture {
                 .map_err(|e| format!("stopping capture: {e}"));
         self.output.ivars().encoder.finish();
         res
+    }
+}
+
+/// Set to a number of microseconds, the shortest time between two captures
+/// instead of one frame at the stream's rate. An experiment for issue #109:
+/// the built-in display refreshes at 120 Hz, and at exactly 1/60 s a tick that
+/// comes a hair early may be passed over, which makes a 25 ms gap. With e.g.
+/// 15000 every second 120 Hz tick still qualifies; 0 captures every refresh.
+pub const INTERVAL_ENV: &str = "AETHERDESK_CAPTURE_INTERVAL_US";
+
+/// The minimum frame interval for `fps`, in microseconds; see [`INTERVAL_ENV`].
+fn frame_interval_us(fps: u32) -> i64 {
+    let default = 1_000_000 / i64::from(fps.max(1));
+    match std::env::var(INTERVAL_ENV)
+        .ok()
+        .map(|v| v.trim().parse::<i64>())
+    {
+        None => default,
+        Some(Ok(us)) if us >= 0 => {
+            println!("capture: at least {us} µs between frames ({INTERVAL_ENV})");
+            us
+        }
+        Some(_) => {
+            eprintln!("{INTERVAL_ENV}: not a number of microseconds; using {default}");
+            default
+        }
     }
 }
 

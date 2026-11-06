@@ -14,6 +14,7 @@ use crate::capture::{Capture, Display};
 use crate::encoder::{EncodedFrame, Encoder, Settings, host_time};
 use crate::inject;
 use crate::input::Rect;
+use crate::pipeline::Pipeline;
 
 /// What a client may tune. The display decides the size.
 #[derive(Debug, Clone, Copy)]
@@ -59,7 +60,9 @@ impl Stream {
             bitrate_bps: s.mbps.saturating_mul(1_000_000),
             max_in_flight: s.in_flight,
         };
-        let encoder = Encoder::new(&settings, tx.clone()).map_err(anyhow::Error::msg)?;
+        let pipeline = Arc::new(Pipeline::default());
+        let encoder =
+            Encoder::new(&settings, tx.clone(), pipeline.clone()).map_err(anyhow::Error::msg)?;
         let keyframe = encoder.keyframe_trigger();
         let skipped = encoder.skipped_counter();
         let capture = Capture::start(
@@ -74,7 +77,7 @@ impl Stream {
         .map_err(anyhow::Error::msg)?;
         Ok(Self {
             capture,
-            frames: forward_frames(rx, keyframe.clone()),
+            frames: forward_frames(rx, keyframe.clone(), pipeline),
             keyframe,
             skipped,
             width: size.0 as u32,
@@ -90,21 +93,31 @@ impl Stream {
 /// Moves encoder output from its std channel onto a small bounded tokio
 /// channel, as protocol frames. When that's full the network is behind: drop
 /// the frame and force a keyframe, since every following P-frame depends on
-/// the lost one.
+/// the lost one. Prints the [`Pipeline`] summary every few seconds.
 fn forward_frames(
     rx: mpsc::Receiver<Result<EncodedFrame, String>>,
     keyframe: Arc<AtomicBool>,
+    pipeline: Arc<Pipeline>,
 ) -> tokio::sync::mpsc::Receiver<Result<VideoFrame, String>> {
     let (tx, out) = tokio::sync::mpsc::channel(SEND_QUEUE);
     std::thread::spawn(move || {
         let mut first_pts = None;
         for item in rx {
             match item {
-                Ok(frame) => match tx.try_send(Ok(video_frame(frame, &mut first_pts))) {
-                    Ok(()) => {}
-                    Err(TrySendError::Full(_)) => keyframe.store(true, Ordering::Relaxed),
-                    Err(TrySendError::Closed(_)) => break,
-                },
+                Ok(frame) => {
+                    pipeline.encoded(frame.delivered_at, frame.submitted_at, frame.encoded_at);
+                    let queued = match tx.try_send(Ok(video_frame(frame, &mut first_pts))) {
+                        Ok(()) => true,
+                        Err(TrySendError::Full(_)) => {
+                            keyframe.store(true, Ordering::Relaxed);
+                            false
+                        }
+                        Err(TrySendError::Closed(_)) => break,
+                    };
+                    if let Some(line) = pipeline.forwarded(queued, host_time()) {
+                        println!("{line}");
+                    }
+                }
                 Err(e) => {
                     let _ = tx.blocking_send(Err(e));
                 }

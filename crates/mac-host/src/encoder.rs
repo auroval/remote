@@ -41,6 +41,7 @@ use objc2_video_toolbox::{
 use aetherdesk_proto::Codec;
 
 use crate::annexb;
+use crate::pipeline::Pipeline;
 
 /// One encoded frame, Annex B, with the parameter sets (H.264: SPS, PPS;
 /// HEVC: VPS, SPS, PPS) in front of every keyframe.
@@ -88,6 +89,8 @@ struct Shared {
     output: EncoderOutput,
     force_keyframe: Arc<AtomicBool>,
     skipped: Arc<AtomicU64>,
+    /// Frame accounting for the summary line.
+    pipeline: Arc<Pipeline>,
     max_in_flight: usize,
     gate: Mutex<Gate>,
     /// Where finished frames free their slot and pending frames go in.
@@ -127,7 +130,11 @@ fn no() -> &'static CFType {
 }
 
 impl Encoder {
-    pub fn new(s: &Settings, output: EncoderOutput) -> Result<Self, String> {
+    pub fn new(
+        s: &Settings,
+        output: EncoderOutput,
+        pipeline: Arc<Pipeline>,
+    ) -> Result<Self, String> {
         // Not in the objc2 bindings; the value is the constant's string.
         let main444 = CFString::from_static_str("HEVC_Main444_AutoLevel");
         let (codec_type, profile): (_, &CFString) = match s.codec {
@@ -244,6 +251,7 @@ impl Encoder {
                 output,
                 force_keyframe: Arc::new(AtomicBool::new(false)),
                 skipped: Arc::new(AtomicU64::new(0)),
+                pipeline,
                 max_in_flight: s.max_in_flight.max(1),
                 gate: Mutex::new(Gate::default()),
                 queue: DispatchQueue::new("nl.stormlantern.aetherdesk.encoder", None),
@@ -267,6 +275,7 @@ impl Encoder {
     /// for a free slot and older waiting ones are skipped.
     pub fn encode(&self, image: &CVImageBuffer, pts: CMTime) {
         let delivered = host_time();
+        self.shared.pipeline.captured(unsafe { pts.seconds() });
         let mut gate = self.shared.gate.lock().unwrap();
         if gate.stopped {
             return;
@@ -277,15 +286,20 @@ impl Encoder {
                 .replace((image.retain(), pts, delivered))
                 .is_some()
             {
-                self.shared.skipped.fetch_add(1, Ordering::Relaxed);
+                self.shared.skip();
             }
             return;
         }
         // A newer frame supersedes one still waiting.
         if gate.pending.take().is_some() {
-            self.shared.skipped.fetch_add(1, Ordering::Relaxed);
+            self.shared.skip();
         }
         Shared::submit(&self.shared, &mut gate, image, pts, delivered);
+    }
+
+    /// ScreenCaptureKit called without a picture: nothing changed.
+    pub fn idle(&self) {
+        self.shared.pipeline.idle();
     }
 
     /// Flushes frames still in the encoder.
@@ -300,6 +314,11 @@ impl Encoder {
 }
 
 impl Shared {
+    fn skip(&self) {
+        self.skipped.fetch_add(1, Ordering::Relaxed);
+        self.pipeline.skipped();
+    }
+
     /// Hands a frame to VideoToolbox. Called with the gate held, so frames
     /// go in in capture order.
     fn submit(
@@ -332,8 +351,11 @@ impl Shared {
                         })
                     })
                 };
-                if let Some(result) = result {
-                    let _ = shared.output.send(result);
+                match result {
+                    Some(result) => {
+                        let _ = shared.output.send(result);
+                    }
+                    None => shared.pipeline.encoder_dropped(),
                 }
                 // Free the slot on our own queue: VideoToolbox may call this
                 // from inside `submit`, where the gate is still held.

@@ -21,6 +21,7 @@ use sdl3::video::WindowContext;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::decoder::{Layout, Picture};
+use crate::frames::{Frames, Pacer, Present};
 use crate::input::{Forwarder, host_key};
 use crate::latency::{ClockSync, Stats, now_us};
 use crate::net::State;
@@ -59,6 +60,7 @@ pub fn run(
     welcome: &Welcome,
     host: &str,
     pictures: Receiver<Picture>,
+    frames: &Frames,
     input: UnboundedSender<InputEvent>,
     link: LinkView<'_>,
 ) -> anyhow::Result<()> {
@@ -90,6 +92,30 @@ pub fn run(
         .build()
         .context("creating window")?;
     let mut canvas = window.into_canvas();
+    let present = Present::from_env();
+    if present == Present::Vsync {
+        // SAFETY: the renderer is alive for as long as `canvas`.
+        let ok = unsafe { sdl3::sys::render::SDL_SetRenderVSync(canvas.raw(), 1) };
+        if ok {
+            say!("presenting with vsync, one picture per refresh");
+        } else {
+            warn!(
+                "no vsync ({}); presenting as pictures come",
+                sdl3::get_error()
+            );
+        }
+    }
+    let mut pacer = Pacer::new(present);
+    if let Some(hz) = canvas
+        .window()
+        .get_display()
+        .ok()
+        .and_then(|d| d.get_mode().ok())
+        .map(|m| m.refresh_rate)
+        .filter(|&hz| hz > 1.0)
+    {
+        frames.set_refresh_us((1e6 / f64::from(hz)) as i64);
+    }
     canvas
         .set_logical_size(w, h, SDL_RendererLogicalPresentation::LETTERBOX)
         .map_err(|e| anyhow!("logical size: {e}"))?;
@@ -294,19 +320,23 @@ pub fn run(
             );
         }
 
-        let picture = match pictures.recv_timeout(Duration::from_millis(10)) {
-            Ok(mut p) => {
-                while let Ok(newer) = pictures.try_recv() {
-                    p = newer;
+        // Wait for a picture only when none is waiting already.
+        if pacer.is_empty() {
+            match pictures.recv_timeout(Duration::from_millis(10)) {
+                Ok(p) => pacer.push(p),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    say!("connection closed");
+                    return Ok(());
                 }
-                Some(p)
             }
-            Err(RecvTimeoutError::Timeout) => None,
-            Err(RecvTimeoutError::Disconnected) => {
-                say!("connection closed");
-                return Ok(());
-            }
-        };
+        }
+        // A closed channel shows up at the wait above.
+        while let Ok(p) = pictures.try_recv() {
+            pacer.push(p);
+        }
+        let (picture, dropped) = pacer.next();
+        frames.replaced(dropped);
         if let Some(picture) = &picture {
             if size != (picture.width, picture.height) || layout != picture.layout {
                 if size != (picture.width, picture.height) {
@@ -451,13 +481,14 @@ pub fn run(
         }
 
         if let Some(picture) = picture {
-            latency.shown(
-                crate::latency::Timing {
-                    presented: now_us(),
-                    ..picture.timing
-                },
-                link.sync,
-            );
+            let timing = crate::latency::Timing {
+                presented: now_us(),
+                ..picture.timing
+            };
+            for line in frames.shown(&timing) {
+                say!("{line}");
+            }
+            latency.shown(timing, link.sync);
             shown += 1;
         }
         if second.elapsed() >= Duration::from_secs(1) {
