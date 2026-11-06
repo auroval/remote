@@ -270,16 +270,22 @@ impl Capture {
     }
 }
 
-/// Set to a number of microseconds, the shortest time between two captures
-/// instead of one frame at the stream's rate. An experiment for issue #109:
-/// the built-in display refreshes at 120 Hz, and at exactly 1/60 s a tick that
-/// comes a hair early may be passed over, which makes a 25 ms gap. With e.g.
-/// 15000 every second 120 Hz tick still qualifies; 0 captures every refresh.
+/// Set to a number of microseconds, the shortest time between two captures,
+/// overriding [`default_interval_us`]; 0 captures every refresh.
 pub const INTERVAL_ENV: &str = "AETHERDESK_CAPTURE_INTERVAL_US";
+
+/// The shortest time between two captures at `fps`: 90 % of a frame, not a
+/// whole one. The built-in display refreshes at 120 Hz, and with exactly 1/60 s
+/// a tick that comes a hair early is passed over, leaving a 25 ms gap (#109).
+/// At 90 % every second 120 Hz tick still qualifies, so a 60 Hz stream gets
+/// one capture per frame.
+fn default_interval_us(fps: u32) -> i64 {
+    1_000_000 * 9 / (10 * i64::from(fps.max(1)))
+}
 
 /// The minimum frame interval for `fps`, in microseconds; see [`INTERVAL_ENV`].
 fn frame_interval_us(fps: u32) -> i64 {
-    let default = 1_000_000 / i64::from(fps.max(1));
+    let default = default_interval_us(fps);
     match std::env::var(INTERVAL_ENV)
         .ok()
         .map(|v| v.trim().parse::<i64>())
@@ -311,4 +317,18 @@ pub(crate) fn wait(
     start(&block);
     rx.recv_timeout(TIMEOUT)
         .map_err(|_| "timed out".to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_interval_us;
+
+    #[test]
+    fn default_interval_leaves_room_for_an_early_tick() {
+        // 60 fps on a 120 Hz display: 15 ms, so every second tick qualifies.
+        assert_eq!(default_interval_us(60), 15_000);
+        assert!(default_interval_us(60) < 2 * 1_000_000 / 120);
+        assert_eq!(default_interval_us(30), 30_000);
+        assert_eq!(default_interval_us(0), 900_000);
+    }
 }
