@@ -98,7 +98,7 @@ Why no root daemon, unlike the Mac: on the Mac the daemon exists for the login w
 | R8 | Sharp text. | Should | HEVC 4:4:4 by default when both sides support it (they do on this hardware, see above). |
 | R9 | Pairing and discovery as on the Mac. | Should | `auroval pair` on the Mac finds the Linux host over mDNS; a code shown by the host pairs it. |
 | R10 | Plain-text clipboard both ways. | Should | Multi-line text and emoji survive both directions. |
-| R11 | Installable without building. | Should | One package per side: the client as a Homebrew cask on the Mac, the host from the Linux release tarball or PKGBUILD ([#37](https://github.com/stormlantern-dev/aetherdesk/issues/37)). |
+| R11 | Installable without building. | Should | One package per side: the client as a Homebrew cask on the Mac, the host from the Linux release tarball or PKGBUILD ([#37](https://github.com/auroval/remote/issues/37)). |
 | R12 | Picture size follows the client window, through a headless output. | Should | Resizing the client window resizes a `hyprctl output create headless` output within a second, without crashing Hyprland. |
 | R13 | Works on AMD/Intel GPUs (VA-API), not just NVIDIA. | Could | The same fit as R7 on a VA-API machine. |
 | R14 | Colors right on the Mac's P3 display. | Could | A sRGB test pattern looks the same on the Mac client as on the Linux monitor, side by side. |

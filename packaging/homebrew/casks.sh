@@ -9,7 +9,7 @@ set -euo pipefail
 version=${1:?usage: casks.sh <version> <tap-checkout>}
 tap=${2:?usage: casks.sh <version> <tap-checkout>}
 here=$(cd "$(dirname "$0")" && pwd)
-repo=stormlantern-dev/aetherdesk
+repo=auroval/remote
 
 sums=$(mktemp -d)
 trap 'rm -rf "$sums"' EXIT

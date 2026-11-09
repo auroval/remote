@@ -1,4 +1,4 @@
-# Generated from packaging/homebrew/auroval.rb.in in stormlantern-dev/aetherdesk
+# Generated from packaging/homebrew/auroval.rb.in in auroval/remote
 # by packaging/homebrew/casks.sh. Edit the template there, not this file.
 cask "auroval" do
   version "@VERSION@"
@@ -6,13 +6,13 @@ cask "auroval" do
   on_linux do
     on_intel do
       sha256 "@SHA256_LINUX_X86_64@"
-      url "https://github.com/stormlantern-dev/aetherdesk/releases/download/v#{version}/auroval-#{version}-x86_64-linux.tar.gz"
+      url "https://github.com/auroval/remote/releases/download/v#{version}/auroval-#{version}-x86_64-linux.tar.gz"
     end
   end
 
   name "Auroval"
   desc "Use your Mac from Linux (Wayland): the client"
-  homepage "https://github.com/stormlantern-dev/aetherdesk"
+  homepage "https://github.com/auroval/remote"
 
   livecheck do
     skip "Filled in by casks.sh on release."

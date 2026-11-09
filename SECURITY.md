@@ -6,7 +6,7 @@ welcome and taken seriously.
 ## Reporting a vulnerability
 
 Please report it privately via
-[GitHub's private vulnerability reporting](https://github.com/stormlantern-dev/aetherdesk/security/advisories/new),
+[GitHub's private vulnerability reporting](https://github.com/auroval/remote/security/advisories/new),
 not in a public issue. Include what you found, how to reproduce it, and which
 version or commit you tested.
 
@@ -24,7 +24,7 @@ both signed by GitHub Actions. To check that a download was built by this
 repository's release workflow:
 
 ```sh
-gh attestation verify auroval-<version>-x86_64-linux.tar.gz --repo stormlantern-dev/aetherdesk
+gh attestation verify auroval-<version>-x86_64-linux.tar.gz --repo auroval/remote
 ```
 
 The SBOMs (CycloneDX JSON, Rust dependencies) are attached to the release as

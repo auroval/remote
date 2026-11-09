@@ -6,7 +6,7 @@ Arch, CachyOS and other up-to-date Arch-based systems. On other distributions,
 use the Flatpak from the same release (`auroval-<version>-x86_64.flatpak`,
 `flatpak install --user <file>`), which runs anywhere.
 
-On Arch, the [PKGBUILD](https://github.com/stormlantern-dev/aetherdesk/tree/main/packaging/arch)
+On Arch, the [PKGBUILD](https://github.com/auroval/remote/tree/main/packaging/arch)
 is the easier route: it builds from source and `pacman` tracks the files.
 
 ## Dependencies

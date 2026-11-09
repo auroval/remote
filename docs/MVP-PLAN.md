@@ -59,7 +59,7 @@ Two cases, in order of importance for a laptop:
 
 ### M0 — Spikes ✅ GO
 
-Done with [`spikes/m0`](../spikes/m0/) on the target Mac; details in [issue #3](https://github.com/stormlantern-dev/aetherdesk/issues/3). Both cases are a **go**.
+Done with [`spikes/m0`](../spikes/m0/) on the target Mac; details in [issue #3](https://github.com/auroval/remote/issues/3). Both cases are a **go**.
 
 | Question | Result |
 |---|---|
@@ -100,7 +100,7 @@ Done with [`spikes/m0`](../spikes/m0/) on the target Mac; details in [issue #3](
 
 ### M3 — Pairing and minimum security
 
-Connecting should be one command, and only paired machines get in. Until M3 the host used a shared token and a fresh certificate on every start, and the client accepted any certificate. Tracked in [issue #13](https://github.com/stormlantern-dev/aetherdesk/issues/13).
+Connecting should be one command, and only paired machines get in. Until M3 the host used a shared token and a fresh certificate on every start, and the client accepted any certificate. Tracked in [issue #13](https://github.com/auroval/remote/issues/13).
 
 - **Persistent identities:** the host keeps one self-signed certificate across restarts (stored by the daemon from M2); each client has its own client certificate.
 - **Pairing, once:** `scripts/mac.zsh pair` on the Mac shows a 6-digit code in the terminal (the daemon has no screen of its own) → `auroval pair <host>` on Linux asks for it. The code goes through SPAKE2, and the confirmation is bound to both TLS certificates, so someone in the middle gets one guess per attempt. Both sides store the other's certificate fingerprint and a name. Codes expire after 2 minutes; three wrong codes cancel the attempt.
@@ -114,8 +114,8 @@ Connecting should be one command, and only paired machines get in. Until M3 the 
 
 ## Top risks
 
-1. **Recurring Screen Recording prompts** — if Tahoe periodically asks to re-confirm, someone has to click it at the Mac. Still being observed ([issue #3](https://github.com/stormlantern-dev/aetherdesk/issues/3)).
+1. **Recurring Screen Recording prompts** — if Tahoe periodically asks to re-confirm, someone has to click it at the Mac. Still being observed ([issue #3](https://github.com/auroval/remote/issues/3)).
 2. **Lock-screen API** — locking on disconnect uses `SACLockScreenImmediate`, which is private (looked up at run time); if it's gone, the agent posts Ctrl+Cmd+Q instead.
-3. **Login window input** — since macOS 26.6.2 the login window ignores synthetic input from both a LoginWindow agent and a root daemon ([issue #3](https://github.com/stormlantern-dev/aetherdesk/issues/3)). The login window is view-only; logging in from there goes through macOS Screen Sharing.
+3. **Login window input** — since macOS 26.6.2 the login window ignores synthetic input from both a LoginWindow agent and a root daemon ([issue #3](https://github.com/auroval/remote/issues/3)). The login window is view-only; logging in from there goes through macOS Screen Sharing.
 
 Resolved by M0: capture and input at the lock screen; permissions for a self-signed binary in both the user and the loginwindow session. Resolved by M2: waking the display from the root daemon (an IOKit user-activity assertion) and the login/logout handoff (a short frozen frame, no reconnect).
