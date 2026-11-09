@@ -35,8 +35,9 @@ its log.
 During a session the Mac plays to the AetherDesk device, so its sound comes
 out on Linux and the Mac stays quiet. Apps with their own speaker setting
 (Teams, Zoom) can pick AetherDesk too. The Mac's volume keys do nothing
-meanwhile; use the volume on Linux. With `aetherdesk --mic` on Linux,
-AetherDesk is also the Mac's microphone for the session. Afterwards the Mac's
+meanwhile; use the volume on Linux. AetherDesk is also the Mac's
+microphone for the session: it hears the microphone on Linux (unless the
+client runs with `--no-mic`). Afterwards the Mac's
 own devices are back.
 
 ## Pair a client
