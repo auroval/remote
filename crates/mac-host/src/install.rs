@@ -24,7 +24,7 @@ const DRIVER: &str = "/Library/Audio/Plug-Ins/HAL/Auroval.driver";
 /// The Mach service the device looks up: [`crate::speaker`].
 const SPEAKER_SERVICE: &str = "nl.stormlantern.auroval.audio";
 
-/// The install from before the rename (AetherDesk, up to 0.1.0-alpha.5):
+/// The install from before the rename (AetherDesk, up to 0.1.0-alpha.6):
 /// `install` takes it over and `uninstall` removes it.
 mod legacy {
     pub const LABEL: &str = "nl.stormlantern.aetherdesk";

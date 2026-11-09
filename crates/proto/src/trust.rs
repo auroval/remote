@@ -123,7 +123,7 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Moves a directory from before the rename to Auroval (AetherDesk until
-/// 0.1.0-alpha.5) to its new place, keeping identity and pairings. Only when
+/// 0.1.0-alpha.6) to its new place, keeping identity and pairings. Only when
 /// the new one doesn't exist yet; a failure only costs a new pairing.
 pub fn adopt_legacy_dir(old: &Path, new: &Path) {
     if new.exists() || !old.is_dir() {

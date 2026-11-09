@@ -18,7 +18,7 @@
 
 > **Status:** alpha. Use a Mac from Linux: a macOS host (Apple Silicon) streams its screen to a Linux client (Wayland, tested on Hyprland). See [Install](#install-alpha) to try it; the plan is in [docs/MVP-PLAN.md](docs/MVP-PLAN.md).
 
-> **Formerly AetherDesk.** Up to 0.1.0-alpha.5 this project was called AetherDesk. Host and client have to be updated together: the old and new versions don't talk to each other. `auroval-agent install` takes over an AetherDesk install on the Mac, pairings included, and the client picks up `~/.config/aetherdesk` by itself (the Flatpak can't see it: pair again, or `mv ~/.config/aetherdesk ~/.config/auroval` first). Grant Screen Recording and Accessibility once more, to the new path below.
+> **Formerly AetherDesk.** Up to 0.1.0-alpha.6 this project was called AetherDesk. Host and client have to be updated together: the old and new versions don't talk to each other. `auroval-agent install` takes over an AetherDesk install on the Mac, pairings included, and the client picks up `~/.config/aetherdesk` by itself (the Flatpak can't see it: pair again, or `mv ~/.config/aetherdesk ~/.config/auroval` first). Grant Screen Recording and Accessibility once more, to the new path below.
 
 ## Goals
 
