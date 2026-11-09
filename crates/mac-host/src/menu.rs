@@ -13,6 +13,7 @@
 use std::ffi::CStr;
 use std::process::Command;
 
+use dispatch2::DispatchQueue;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
@@ -236,13 +237,34 @@ fn single_instance() -> Result<bool, String> {
 /// own prompt), so granting is a switch to turn on rather than + and a path.
 /// Later calls change nothing. The agent is the same app, so what's granted
 /// here is granted to it.
+///
+/// One prompt at a time: both at once can open only one settings pane.
+/// Accessibility first, since granting it needs no restart; Screen
+/// Recording once that's on, since its prompt ends with "Quit & Reopen".
 fn request_permissions() {
-    if !CGPreflightScreenCaptureAccess() {
-        CGRequestScreenCaptureAccess();
+    let screen = !CGPreflightScreenCaptureAccess();
+    if CGPreflightPostEventAccess() {
+        if screen {
+            CGRequestScreenCaptureAccess();
+        }
+        return;
     }
-    if !CGPreflightPostEventAccess() {
-        CGRequestPostEventAccess();
+    CGRequestPostEventAccess();
+    if !screen {
+        return;
     }
+    std::thread::spawn(|| {
+        // Up to ten minutes; after that the menu still links to the pane.
+        for _ in 0..300 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if CGPreflightPostEventAccess() {
+                DispatchQueue::main().exec_async(|| {
+                    CGRequestScreenCaptureAccess();
+                });
+                return;
+            }
+        }
+    });
 }
 
 /// `auroval-agent menu`, or Auroval.app opened without arguments.
