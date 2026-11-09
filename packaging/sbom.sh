@@ -6,7 +6,7 @@
 #   packaging/sbom.sh <crate dir under crates/> <target triple> <output file>
 set -euo pipefail
 crate=$1 target=$2 out=$3
-name=aetherdesk-sbom-$$
+name=auroval-sbom-$$
 cargo cyclonedx --format json --spec-version 1.5 --target "$target" \
   --override-filename "$name" --quiet
 mv "crates/$crate/$name.json" "$out"

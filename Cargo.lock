@@ -25,11 +25,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "aetherdesk-linux-client"
+name = "auroval-linux-client"
 version = "0.1.0-alpha.6"
 dependencies = [
  "ab_glyph",
- "aetherdesk-proto",
+ "auroval-proto",
  "anyhow",
  "ffmpeg-next",
  "mdns-sd",
@@ -41,10 +41,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "aetherdesk-mac-host"
+name = "auroval-mac-host"
 version = "0.1.0-alpha.6"
 dependencies = [
- "aetherdesk-proto",
+ "auroval-proto",
  "anyhow",
  "block2",
  "dispatch2",
@@ -68,7 +68,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "aetherdesk-proto"
+name = "auroval-proto"
 version = "0.1.0-alpha.6"
 dependencies = [
  "libc",

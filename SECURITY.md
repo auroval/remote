@@ -1,6 +1,6 @@
 # Security
 
-AetherDesk gives remote control over a computer, so security reports are
+Auroval gives remote control over a computer, so security reports are
 welcome and taken seriously.
 
 ## Reporting a vulnerability
@@ -15,7 +15,7 @@ published with credit to you, unless you'd rather stay anonymous.
 
 ## Supported versions
 
-AetherDesk is in alpha. Only the latest release gets fixes.
+Auroval is in alpha. Only the latest release gets fixes.
 
 ## Verifying a release
 
@@ -24,7 +24,7 @@ both signed by GitHub Actions. To check that a download was built by this
 repository's release workflow:
 
 ```sh
-gh attestation verify aetherdesk-<version>-x86_64-linux.tar.gz --repo stormlantern-dev/aetherdesk
+gh attestation verify auroval-<version>-x86_64-linux.tar.gz --repo stormlantern-dev/aetherdesk
 ```
 
 The SBOMs (CycloneDX JSON, Rust dependencies) are attached to the release as
