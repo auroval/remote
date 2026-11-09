@@ -48,8 +48,10 @@ auroval pair
 auroval
 ```
 
-`auroval --mic` also sends this microphone to the Mac (it needs an ffmpeg
-with libopus, as Arch's has). `auroval --help` lists the other options.
+Your microphone goes to the Mac as well, as its Auroval input, so calls
+there hear you (it needs an ffmpeg with libopus, as Arch's and the Flatpak's
+have). `auroval --no-mic` keeps it here; `auroval --help` lists the
+other options.
 
 Auroval also appears in your app launcher. Your identity and paired Macs
 live in `~/.config/auroval/`.
