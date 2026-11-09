@@ -41,11 +41,16 @@ fi
 rm -rf "$app"
 mkdir -p "$contents/MacOS" "$contents/Resources"
 cp "$bin" "$contents/MacOS/auroval-agent"
+# Written outside the bundle, by the binary outside it: from macOS 27 a
+# program run from inside an app can't write that app's Info.plist (EIO).
+plist=$(mktemp)
 if [ -n "$key" ]; then
-	"$contents/MacOS/auroval-agent" _info-plist --ed-key "$key" > "$contents/Info.plist"
+	"$bin" _info-plist --ed-key "$key" > "$plist"
 else
-	"$contents/MacOS/auroval-agent" _info-plist > "$contents/Info.plist"
+	"$bin" _info-plist > "$plist"
 fi
+install -m 644 "$plist" "$contents/Info.plist"
+rm -f "$plist"
 plutil -lint "$contents/Info.plist" > /dev/null
 printf 'APPL????' > "$contents/PkgInfo"
 
