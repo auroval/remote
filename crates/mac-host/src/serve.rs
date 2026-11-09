@@ -83,18 +83,21 @@ pub fn parse(
 /// Checks Screen Recording and Accessibility for this process, asking macOS
 /// to show the prompt when one is missing. Without Screen Recording there is
 /// nothing to stream; without Accessibility only input is lost.
-/// `then` says how to restart after granting: macOS only applies a new
-/// permission to a process that starts after it.
-pub fn check_permissions(who: &str, then: &str) -> Result<(), String> {
+/// `then` says what to do after granting. `ask` shows macOS's prompts; the
+/// installed agent leaves that to the menu-bar item, which asks one at a
+/// time.
+pub fn check_permissions(who: &str, then: &str, ask: bool) -> Result<(), String> {
     // Both checked (and both prompts asked for) before reporting, so a
     // missing Screen Recording doesn't hide a missing Accessibility.
     let screen = CGPreflightScreenCaptureAccess();
     let input = CGPreflightPostEventAccess();
-    if !screen {
+    if !screen && ask {
         CGRequestScreenCaptureAccess();
     }
     if !input {
-        CGRequestPostEventAccess();
+        if ask {
+            CGRequestPostEventAccess();
+        }
         eprintln!(
             "warning: no Accessibility permission, so keyboard and mouse from the client \
              won't work. Grant it to {who} in System Settings → Privacy & Security → \
@@ -115,6 +118,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     check_permissions(
         "the app you run this from (e.g. your terminal)",
         "restart that app",
+        true,
     )?;
     let store = Store::serve()?;
     let id = store

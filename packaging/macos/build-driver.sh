@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds the Auroval audio device (crates/mac-host/driver) into
-# <outdir>/Auroval.driver, next to where auroval-agent goes:
-# `auroval-agent install` picks it up from beside its own binary.
-# Signs it ad hoc; release-tarball.sh signs it again with the Developer ID.
+# <outdir>/Auroval.driver. app-bundle.sh puts it in the app's
+# Contents/PlugIns, where `auroval-agent install` and the installer take it
+# from. Signs it ad hoc; sign-app.sh signs it again with the Developer ID.
 #
 #   packaging/macos/build-driver.sh <outdir>
 set -euo pipefail

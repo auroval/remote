@@ -6,8 +6,8 @@
 #   scripts/mac.zsh serve [args]      build and run the host by hand (auroval-agent serve)
 #   scripts/mac.zsh record [args]     record a few seconds of H.264 to a file
 #   scripts/mac.zsh pr <number>       switch to a PR's branch and run doctor
-#   scripts/mac.zsh install           build, sign and install the daemon + agents and the
-#                                     Auroval audio device (asks for sudo; same as
+#   scripts/mac.zsh install           build Auroval.app, sign it and install it with the
+#                                     daemon, agents and audio device (asks for sudo; same as
 #                                     auroval-agent install)
 #   scripts/mac.zsh uninstall         remove them again (asks for sudo)
 #   scripts/mac.zsh status            are the daemon and agent running? last log lines
@@ -20,8 +20,8 @@ set -euo pipefail
 self=${0:A}
 cd ${self:h:h}
 
-DEST="/Library/Application Support/Auroval"
-BIN="$DEST/auroval-agent"
+APP=/Applications/Auroval.app
+BIN=$APP/Contents/MacOS/auroval-agent
 LOGS=/Library/Logs/Auroval
 
 agent() {
@@ -32,9 +32,14 @@ agent() {
 # so a Homebrew-installed host does the same; this builds it first.
 built() {
   cargo build --quiet --release -p auroval-mac-host
-  # install picks the audio device up from next to the binary.
-  [[ $1 == install ]] && packaging/macos/build-driver.sh target/release > /dev/null
-  target/release/auroval-agent "$@"
+  if [[ $1 == install ]]; then
+    # Auroval.app with the audio device; without Sparkle, since a
+    # development build doesn't update itself.
+    NO_SPARKLE=1 packaging/macos/app-bundle.sh target/release/auroval-agent target/release/bundle > /dev/null
+    target/release/bundle/Auroval.app/Contents/MacOS/auroval-agent "$@"
+  else
+    target/release/auroval-agent "$@"
+  fi
 }
 
 case ${1:-help} in
@@ -64,7 +69,7 @@ case ${1:-help} in
     sudo "$BIN" "$cmd" "$@"
     ;;
   install | uninstall | status | restart) built "$1" ;;
-  logs) tail -n 20 -F $LOGS/daemon.log $LOGS/agent.log $LOGS/loginwindow.log ;;
+  logs) tail -n 20 -F $LOGS/daemon.log $LOGS/agent.log $LOGS/loginwindow.log $LOGS/menu.log ;;
   *)
     sed -n '2,17p' "$self" | sed 's/^# \{0,1\}//'
     ;;

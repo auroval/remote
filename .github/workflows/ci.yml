@@ -41,7 +41,7 @@ jobs:
           shared='Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$'
           declare -A patterns=(
             [linux]="^(crates/|assets/|\.devcontainer/|scripts/e2e-fake-host\.sh$|$shared)"
-            [macos]="^(crates/|assets/|packaging/macos/|$shared)"
+            [macos]="^(crates/|assets/|packaging/macos/|scripts/mac\.zsh$|$shared)"
             [spike]="^(spikes/m0/|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)"
           )
           # Everything runs unless the diff is known: a failure here must
@@ -101,8 +101,52 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo clippy --workspace --all-targets --locked
       - run: cargo test --workspace --locked
-      - name: Build the Auroval audio device
-        run: packaging/macos/build-driver.sh "$RUNNER_TEMP"
+      - name: Syntax of the scripts that only run on release
+        run: |
+          for f in packaging/macos/*.sh packaging/macos/pkg/scripts/*; do bash -n "$f"; done
+          zsh -n scripts/mac.zsh
+      # What the release does, without the secrets: ad hoc signed, unsigned
+      # package, no updater key.
+      - name: Build Auroval.app (with Sparkle) and the .pkg
+        run: |
+          cargo build -p auroval-mac-host --locked
+          packaging/macos/app-bundle.sh target/debug/auroval-agent "$RUNNER_TEMP/app"
+          packaging/macos/build-pkg.sh "$RUNNER_TEMP/app/Auroval.app" "$RUNNER_TEMP/pkg"
+          test -d "$RUNNER_TEMP/app/Auroval.app/Contents/Frameworks/Sparkle.framework"
+          test -d "$RUNNER_TEMP/app/Auroval.app/Contents/PlugIns/Auroval.driver"
+      # The runner's sudo needs no password: install the package for real,
+      # check what the postinstall set up, then uninstall it again.
+      - name: Install the .pkg, check it, uninstall
+        run: |
+          app=/Applications/Auroval.app
+          daemon=system/nl.stormlantern.auroval.daemon
+          sudo installer -pkg "$RUNNER_TEMP"/pkg/Auroval-*.pkg -target / ||
+            { tail -n 40 /var/log/install.log; exit 1; }
+          codesign --verify --deep --strict "$app"
+          test "$(cat '/Library/Application Support/Auroval/install-source')" = pkg
+          test "$(readlink /usr/local/bin/auroval-agent)" = "$app/Contents/MacOS/auroval-agent"
+          test -d /Library/Audio/Plug-Ins/HAL/Auroval.driver
+          for f in daemon agent loginwindow menu; do
+            plutil -lint /Library/Launch*/nl.stormlantern.auroval.$f.plist
+          done
+          running=false
+          for _ in $(seq 50); do
+            if launchctl print "$daemon" 2>/dev/null | grep -q 'state = running'; then
+              running=true; break
+            fi
+            sleep 0.2
+          done
+          $running || { launchctl print "$daemon" || true; cat /Library/Logs/Auroval/daemon.log || true; exit 1; }
+          auroval-agent version
+          sudo "$app/Contents/MacOS/auroval-agent" _uninstall-root
+          test ! -e "$app"
+          test ! -e /usr/local/bin/auroval-agent
+          test ! -e /Library/LaunchDaemons/nl.stormlantern.auroval.daemon.plist
+          test ! -e /Library/Audio/Plug-Ins/HAL/Auroval.driver
+          if launchctl print "$daemon" >/dev/null 2>&1; then echo "daemon still loaded"; exit 1; fi
+          if pkgutil --pkg-info nl.stormlantern.auroval.pkg >/dev/null 2>&1; then
+            echo "package receipt still there"; exit 1
+          fi
 
   spike-m0:
     name: spike-m0 (macOS)

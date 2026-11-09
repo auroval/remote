@@ -38,14 +38,16 @@ You need a **Mac** with Apple Silicon and macOS 14 or later (the host), and a **
 
 ### 1. On the Mac
 
+Open `Auroval-<version>.pkg` from the [latest release](https://github.com/auroval/remote/releases) and follow the installer; Auroval then updates itself. Or with Homebrew (updated by `brew upgrade`):
+
 ```sh
 brew install --cask stormlantern-dev/tap/auroval-host
 auroval-agent install
 ```
 
-`auroval-agent install` asks for your password: it puts the host in `/Library/Application Support/Auroval` and starts it, now and at every login (also at the login window, view-only there).
+`auroval-agent install` asks for your password. Either way, **Auroval.app** lands in Applications and the host starts, now and at every login (also at the login window, view-only there), with a menu-bar item that shows its status.
 
-Then, **once**, open System Settings → Privacy & Security and add `/Library/Application Support/Auroval/auroval-agent` to both **Screen & System Audio Recording** and **Accessibility** (the + button, then Cmd+Shift+G and paste the path). macOS only applies them to a fresh start, so then run `auroval-agent restart`. `auroval-agent status` shows whether it runs.
+Then, **once**, allow Auroval two things: macOS asks for **Accessibility** and then for **Screen & System Audio Recording** when the menu-bar item first starts. Turn **Auroval** on in each list it opens (or later: System Settings → Privacy & Security, or the menu-bar item's links). No restart needed. `auroval-agent status` shows whether it runs.
 
 ### 2. On Linux
 
@@ -94,7 +96,7 @@ Away from home, connect to the Mac's VPN or Tailscale address: `auroval <address
 
 ### If it doesn't connect
 
-- `auroval-agent status` on the Mac: are the daemon and agent running? Missing permissions show in its log; after granting them, `auroval-agent restart`.
+- `auroval-agent status` on the Mac: are the daemon and agent running? Missing permissions show in its log and in the menu-bar item.
 - A VPN on a narrow network (some mobile and guest networks): since 0.1.0-alpha.1 that works, but if a connection times out where SSH works, tell us your VPN's MTU.
 - The client keeps a log of its last session in `~/.local/state/auroval/client.log`.
 
@@ -134,8 +136,7 @@ The **macOS host** is built natively on the Mac. A container can't help there: D
 On the Mac, either install the host, so it runs at the login window, on the lock screen and in your session:
 
 ```zsh
-scripts/mac.zsh install    # asks for sudo; then grant the installed binary Screen Recording + Accessibility
-scripts/mac.zsh restart    # once, after granting them
+scripts/mac.zsh install    # asks for sudo; then allow Auroval Accessibility + Screen Recording when macOS asks
 scripts/mac.zsh status
 ```
 
