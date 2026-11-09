@@ -3,7 +3,7 @@
 //! the network thread sends them as datagrams. The host plays them as the
 //! AetherDesk device's input, so a call on the Mac hears this microphone.
 //!
-//! Only with `--mic`, and only when the host said it takes it.
+//! On unless `--no-mic`, and only when the host said it takes it.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

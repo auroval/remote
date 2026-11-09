@@ -48,8 +48,10 @@ aetherdesk pair
 aetherdesk
 ```
 
-`aetherdesk --mic` also sends this microphone to the Mac (it needs an ffmpeg
-with libopus, as Arch's has). `aetherdesk --help` lists the other options.
+Your microphone goes to the Mac as well, as its AetherDesk input, so calls
+there hear you (it needs an ffmpeg with libopus, as Arch's and the Flatpak's
+have). `aetherdesk --no-mic` keeps it here; `aetherdesk --help` lists the
+other options.
 
 AetherDesk also appears in your app launcher. Your identity and paired Macs
 live in `~/.config/aetherdesk/`.

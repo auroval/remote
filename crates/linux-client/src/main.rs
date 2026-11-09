@@ -56,7 +56,7 @@ mod trust;
 
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
-usage: aetherdesk [HOST] [--no-clipboard] [--no-audio] [--mic] [--video FORMAT] [--host-key KEY]
+usage: aetherdesk [HOST] [--no-clipboard] [--no-audio] [--no-mic] [--video FORMAT] [--host-key KEY]
        aetherdesk pair [MAC] [--name NAME] [--code CODE]
        aetherdesk hosts
        aetherdesk unpair HOST
@@ -68,9 +68,10 @@ usage: aetherdesk [HOST] [--no-clipboard] [--no-audio] [--mic] [--video FORMAT] 
            Text copied on either side can be pasted on the other while
            connected; --no-clipboard turns that off both ways. The Mac's
            sound plays here; --no-audio turns it off (the Mac then sends
-           none). $AETHERDESK_AUDIO_MS sets its buffer (default 30). --mic
-           sends this microphone to the Mac, as the input of its AetherDesk
-           sound device (an installed host; pick it in calls). --video asks
+           none). $AETHERDESK_AUDIO_MS sets its buffer (default 30). This
+           microphone goes to the Mac, as the input of its AetherDesk sound
+           device (an installed host; pick it in calls); --no-mic keeps it
+           here. Without libopus in ffmpeg it stays off. --video asks
            for a video format: hevc444 (sharpest), hevc (4:2:0, less data)
            or h264. Default: the best the GPU decodes, else h264.
            --host-key sets the key that releases (and grabs) keyboard and
@@ -119,7 +120,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
     let (mut name, mut code) = (None, None);
     let mut no_clipboard = false;
     let mut no_audio = false;
-    let mut mic = false;
+    let mut no_mic = false;
     let mut video = None;
     let mut host_key = None;
     let mut it = args.iter();
@@ -129,7 +130,9 @@ fn parse(args: &[String]) -> Result<Command, String> {
             "--code" => code = Some(it.next().ok_or("--code needs a value")?.clone()),
             "--no-clipboard" => no_clipboard = true,
             "--no-audio" => no_audio = true,
-            "--mic" => mic = true,
+            "--no-mic" => no_mic = true,
+            // On by default since 0.1.0-alpha.6; still accepted for a while.
+            "--mic" => {}
             "--host-key" => {
                 host_key = Some(it.next().ok_or("--host-key needs a key name")?.clone());
             }
@@ -174,9 +177,9 @@ fn parse(args: &[String]) -> Result<Command, String> {
         Ok(())
     };
     let not_connecting = |cmd: &str| -> Result<(), String> {
-        if no_clipboard || no_audio || mic || video.is_some() || host_key.is_some() {
+        if no_clipboard || no_audio || no_mic || video.is_some() || host_key.is_some() {
             return Err(format!(
-                "--no-clipboard, --no-audio, --mic, --video and --host-key are for \
+                "--no-clipboard, --no-audio, --no-mic, --video and --host-key are for \
                  connecting, not {cmd}"
             ));
         }
@@ -216,7 +219,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
                 which: Some(host.clone()),
                 clipboard: !no_clipboard,
                 audio: !no_audio,
-                mic,
+                mic: !no_mic,
                 video,
                 host_key: host_key.clone(),
             })
@@ -230,7 +233,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
                 which: env,
                 clipboard: !no_clipboard,
                 audio: !no_audio,
-                mic,
+                mic: !no_mic,
                 video,
                 host_key: host_key.clone(),
             })
@@ -447,6 +450,13 @@ fn run(
     use std::time::{Duration, Instant};
 
     log::start();
+    // Not offered when it can't be sent: the Mac would switch its input to
+    // a silent AetherDesk device. A microphone that won't open later is
+    // only logged (window.rs); the session goes on without it.
+    let mic = mic
+        && mic::OpusEncoder::new()
+            .inspect_err(|e| warn!("no microphone: {e:#}"))
+            .is_ok();
     say!("connecting to {} ({})…", host.name, host.address);
     let title = host.name.clone();
     let link = net::connect(host, id, clipboard, audio, mic)?;
