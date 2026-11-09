@@ -72,11 +72,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
         ipc::VERSION,
         std::process::id()
     );
-    // Not fatal: the permission may be granted while we run, and the
-    // daemon hears about it when capture fails.
+    // Not fatal: the permission may be granted while we run (each
+    // connection checks again), and the daemon hears about it when capture
+    // fails. The menu-bar item asks for them.
     if let Err(e) = serve::check_permissions(
         &format!("Auroval ({})", crate::bundle::APP),
-        "run: auroval-agent restart",
+        "connect again (no restart needed)",
+        false,
     ) {
         eprintln!("warning: {e}");
     }

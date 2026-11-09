@@ -80,8 +80,7 @@ auroval-agent install     install (or update) Auroval.app in /Applications with
                          (default \"Auroval Dev\") when you have one;
                          otherwise ad hoc, and macOS asks for the permissions
                          again after each update.
-auroval-agent restart     restart your agent, e.g. after granting it Screen
-                         Recording or Accessibility (no password needed)
+auroval-agent restart     restart your agent (no password needed)
 auroval-agent uninstall   remove it all again: app, daemon, agents, audio device,
                          logs and pairings
 auroval-agent status      are the daemon and your agent running? last log lines";
@@ -359,7 +358,7 @@ fn install_staged(app: &Path, source: &str) -> Result<(), String> {
     println!(
         "\nInstalled {}. Once, turn Auroval on under both Screen Recording and \
          Accessibility in System Settings → Privacy & Security (macOS asks, and the \
-         Auroval menu-bar item links there), then run: auroval-agent restart\nTo let a client in: sudo auroval-agent pair",
+         Auroval menu-bar item links there). No restart needed.\nTo let a client in: sudo auroval-agent pair",
         bundle::APP
     );
     Ok(())
@@ -622,9 +621,8 @@ pub fn uninstall_root(_args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `auroval-agent restart`: restarts the user's agent, so a permission
-/// granted after it started takes effect. The login window's agent starts
-/// afresh at every logout, so it picks the permissions up by itself.
+/// `auroval-agent restart`: restarts the user's agent. Not needed after
+/// granting a permission: each connection checks again.
 pub fn restart(_args: &[String]) -> Result<(), String> {
     let job = format!("gui/{}/{LABEL}.agent", uid());
     run("launchctl", &["kickstart", "-k", &job])
