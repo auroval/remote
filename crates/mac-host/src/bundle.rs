@@ -1,29 +1,29 @@
-//! The host as an app bundle, `AetherDesk.app` (#28, #115). From macOS 26.1
+//! The host as an app bundle, `Auroval.app` (#28, #115). From macOS 26.1
 //! on, bare executables don't show up in the Screen Recording list, so the
-//! installed daemon and agents run `aether-agent` from inside the bundle and
+//! installed daemon and agents run `auroval-agent` from inside the bundle and
 //! the permissions attach to the app. The bundle is also the home of the
 //! menu-bar item and its updater ([`crate::menu`]).
 //!
 //! What's here is plain data (paths, the Info.plist, version numbers), so it
 //! is tested on Linux too; `packaging/macos/app-bundle.sh` builds the bundle
-//! with `aether-agent _info-plist`.
+//! with `auroval-agent _info-plist`.
 
 use std::path::{Path, PathBuf};
 
 /// The bundle identifier, which is also the code-signing identifier: the one
 /// the bare binary was signed with before, so the designated requirement
 /// stays the same.
-pub const BUNDLE_ID: &str = "nl.stormlantern.aetherdesk.agent";
-/// Where the installer and `aether-agent install` put the app: where people
+pub const BUNDLE_ID: &str = "nl.stormlantern.auroval.agent";
+/// Where the installer and `auroval-agent install` put the app: where people
 /// look for it, and where System Settings' + button starts.
-pub const APP: &str = "/Applications/AetherDesk.app";
+pub const APP: &str = "/Applications/Auroval.app";
 /// The installed binary: what launchd runs.
-pub const BIN: &str = "/Applications/AetherDesk.app/Contents/MacOS/aether-agent";
+pub const BIN: &str = "/Applications/Auroval.app/Contents/MacOS/auroval-agent";
 /// The appcast Sparkle reads (GitHub Pages; docs/RELEASING.md).
-pub const FEED_URL: &str = "https://stormlantern-dev.github.io/aetherdesk/appcast.xml";
+pub const FEED_URL: &str = "https://auroval.github.io/remote/appcast.xml";
 /// The audio device, inside the bundle (where nested code is signed and
 /// checked as such); installed from there.
-pub const DRIVER_IN_BUNDLE: &str = "Contents/PlugIns/AetherDesk.driver";
+pub const DRIVER_IN_BUNDLE: &str = "Contents/PlugIns/Auroval.driver";
 
 /// The `.app` this executable lies in, if it does
 /// (`X.app/Contents/MacOS/<exe>`).
@@ -36,7 +36,7 @@ pub fn enclosing_bundle(exe: &Path) -> Option<PathBuf> {
         .then(|| app.to_path_buf())
 }
 
-/// Who installed the host, from where `aether-agent install` ran:
+/// Who installed the host, from where `auroval-agent install` ran:
 /// Homebrew's casks live in its `Caskroom`. Homebrew installs don't use the
 /// app's updater, so the two never fight.
 pub fn install_source(exe: &Path) -> &'static str {
@@ -132,17 +132,17 @@ pub fn info_plist(version: &str, feed: &str, ed_key: Option<&str>) -> Result<Str
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>AetherDesk</string>
+	<string>Auroval</string>
 	<key>CFBundleExecutable</key>
-	<string>aether-agent</string>
+	<string>auroval-agent</string>
 	<key>CFBundleIconFile</key>
-	<string>AetherDesk</string>
+	<string>Auroval</string>
 	<key>CFBundleIdentifier</key>
 	<string>{BUNDLE_ID}</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>AetherDesk</string>
+	<string>Auroval</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -213,11 +213,11 @@ mod tests {
     fn finds_the_enclosing_bundle() {
         assert_eq!(enclosing_bundle(Path::new(BIN)), Some(PathBuf::from(APP)));
         assert_eq!(
-            enclosing_bundle(Path::new("/x/target/release/aether-agent")),
+            enclosing_bundle(Path::new("/x/target/release/auroval-agent")),
             None
         );
         assert_eq!(
-            enclosing_bundle(Path::new("/x/Foo/Contents/MacOS/aether-agent")),
+            enclosing_bundle(Path::new("/x/Foo/Contents/MacOS/auroval-agent")),
             None
         );
     }
@@ -225,12 +225,12 @@ mod tests {
     #[test]
     fn homebrew_installs_are_recognised() {
         let cask = Path::new(
-            "/opt/homebrew/Caskroom/aetherdesk-host/0.1.0/aetherdesk-host-0.1.0-arm64-macos/\
-             AetherDesk.app/Contents/MacOS/aether-agent",
+            "/opt/homebrew/Caskroom/auroval-host/0.1.0/auroval-host-0.1.0-arm64-macos/\
+             Auroval.app/Contents/MacOS/auroval-agent",
         );
         assert_eq!(install_source(cask), "homebrew");
         assert_eq!(
-            install_source(Path::new("/tmp/AetherDesk.app/Contents/MacOS/aether-agent")),
+            install_source(Path::new("/tmp/Auroval.app/Contents/MacOS/auroval-agent")),
             "manual"
         );
     }

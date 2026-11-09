@@ -1,5 +1,5 @@
-//! The menu-bar item (#115): what AetherDesk.app does when it's opened
-//! (`aether-agent menu`; launchd starts it at login). It shows whether the
+//! The menu-bar item (#115): what Auroval.app does when it's opened
+//! (`auroval-agent menu`; launchd starts it at login). It shows whether the
 //! host runs and has its two permissions, how to pair, and offers Sparkle's
 //! "Check for Updates…". Sparkle installs the new `.pkg`, with an admin
 //! prompt, since the daemon is root.
@@ -42,7 +42,7 @@ define_class!(
     // Drop.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "AetherDeskMenuActions"]
+    #[name = "AurovalMenuActions"]
     #[ivars = Items]
     struct Actions;
 
@@ -62,8 +62,8 @@ define_class!(
             alert(
                 self.mtm(),
                 "Pair a client",
-                "In Terminal, run:\n\n    sudo aether-agent pair\n\nIt shows a 6-digit code for \
-                 2 minutes. On Linux, run aetherdesk pair and type the code.",
+                "In Terminal, run:\n\n    sudo auroval-agent pair\n\nIt shows a 6-digit code for \
+                 2 minutes. On Linux, run auroval pair and type the code.",
             );
         }
 
@@ -71,8 +71,8 @@ define_class!(
         fn show_uninstall(&self, _sender: Option<&AnyObject>) {
             alert(
                 self.mtm(),
-                "Uninstall AetherDesk",
-                "In Terminal, run:\n\n    aether-agent uninstall\n\nIt removes the app, the \
+                "Uninstall Auroval",
+                "In Terminal, run:\n\n    auroval-agent uninstall\n\nIt removes the app, the \
                  daemon and agents, the audio device, the logs and the pairings, and asks for \
                  your password.",
             );
@@ -210,9 +210,9 @@ fn single_instance() -> Result<bool, String> {
     let dir = if len > 0 && len <= buf.len() {
         String::from_utf8_lossy(&buf[..len - 1]).into_owned()
     } else {
-        format!("/tmp/aetherdesk-{}", unsafe { libc::getuid() })
+        format!("/tmp/auroval-{}", unsafe { libc::getuid() })
     };
-    let path = std::path::Path::new(&dir).join("nl.stormlantern.aetherdesk.menu.lock");
+    let path = std::path::Path::new(&dir).join("nl.stormlantern.auroval.menu.lock");
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -228,7 +228,7 @@ fn single_instance() -> Result<bool, String> {
     Ok(true)
 }
 
-/// `aether-agent menu`, or AetherDesk.app opened without arguments.
+/// `auroval-agent menu`, or Auroval.app opened without arguments.
 pub fn run(_args: &[String]) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
     if !single_instance()? {
@@ -251,7 +251,7 @@ pub fn run(_args: &[String]) -> Result<(), String> {
         accessibility: item(mtm, "Accessibility: …", None, None),
     };
     let menu = NSMenu::new(mtm);
-    let version = format!("AetherDesk {}", env!("CARGO_PKG_VERSION"));
+    let version = format!("Auroval {}", env!("CARGO_PKG_VERSION"));
     menu.addItem(&item(mtm, &version, None, None));
     menu.addItem(&items.host);
     menu.addItem(&NSMenuItem::separatorItem(mtm));
@@ -301,7 +301,7 @@ pub fn run(_args: &[String]) -> Result<(), String> {
                 button.setImage(Some(&image));
             }
             // Not in a bundle (a bare cargo build): no icon to show.
-            None => button.setTitle(ns_string!("AetherDesk")),
+            None => button.setTitle(ns_string!("Auroval")),
         }
     }
     status.setMenu(Some(&menu));

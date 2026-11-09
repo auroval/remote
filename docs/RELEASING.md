@@ -17,15 +17,15 @@ and for the Mac an installer package that updates itself (Sparkle).
 
    The `Release` workflow checks that tag and version match, creates the
    GitHub release as a pre-release, and attaches:
-   - `aetherdesk-<version>-x86_64-linux.tar.gz` (client, built in the Arch
+   - `auroval-<version>-x86_64-linux.tar.gz` (client, built in the Arch
      devcontainer image) and its `.sha256`;
-   - `aetherdesk-<version>-x86_64.flatpak` (client as a Flatpak bundle, built
+   - `auroval-<version>-x86_64.flatpak` (client as a Flatpak bundle, built
      by `packaging/flatpak/build.sh` on runtime `org.freedesktop.Platform`)
      and its `.sha256`;
-   - `AetherDesk-<version>.pkg` (host installer: AetherDesk.app signed with
+   - `Auroval-<version>.pkg` (host installer: Auroval.app signed with
      the Developer ID and notarized, in a package signed with the Developer
      ID Installer certificate, notarized and stapled) and its `.sha256`;
-   - `aetherdesk-host-<version>-arm64-macos.tar.gz` (the same AetherDesk.app,
+   - `auroval-host-<version>-arm64-macos.tar.gz` (the same Auroval.app,
      for Homebrew) and its `.sha256`;
    - `appcast.xml`: Sparkle's feed for this release, the package's EdDSA
      signature and the release notes, signed itself. Not published yet.
@@ -39,7 +39,7 @@ and for the Mac an installer package that updates itself (Sparkle).
    packaging/homebrew/casks.sh 0.1.0-alpha.1 ../homebrew-tap
    ```
 
-   fills `Casks/aetherdesk.rb` and `Casks/aetherdesk-host.rb` from the
+   fills `Casks/auroval.rb` and `Casks/auroval-host.rb` from the
    templates in `packaging/homebrew/` and the release's checksums. It
    doesn't commit: check the diff, then commit to a branch and open a PR on
    the tap. Its `main` is protected by a ruleset, so a direct push is
@@ -47,9 +47,9 @@ and for the Mac an installer package that updates itself (Sparkle).
 4. **Try it** on both machines:
 
    ```sh
-   brew install --cask stormlantern-dev/tap/aetherdesk        # Linux
-   brew install --cask stormlantern-dev/tap/aetherdesk-host   # Mac
-   aether-agent install                                       # Mac, then the permissions
+   brew install --cask stormlantern-dev/tap/auroval        # Linux
+   brew install --cask stormlantern-dev/tap/auroval-host   # Mac
+   auroval-agent install                                       # Mac, then the permissions
    ```
 
    or, on the Mac, open the release's `.pkg`.
@@ -61,7 +61,7 @@ and for the Mac an installer package that updates itself (Sparkle).
 
    The `Appcast` workflow takes `appcast.xml` from that release and
    publishes it on GitHub Pages at
-   <https://stormlantern-dev.github.io/aetherdesk/appcast.xml>, the
+   <https://auroval.github.io/remote/appcast.xml>, the
    `SUFeedURL` in every app. Within a day each one offers the update. To go
    back, run it again with the previous tag (an app never offers an older
    version, but stops offering the bad one).
@@ -82,7 +82,7 @@ only has to deliver them: the app refuses an altered feed
 
 ## What "alpha" means here
 
-- **Mac:** AetherDesk.app, signed with the Developer ID and notarized, so
+- **Mac:** Auroval.app, signed with the Developer ID and notarized, so
   Screen Recording and Accessibility, once granted to the app, survive
   updates. From macOS 26.1 on bare executables don't show up in the Screen
   Recording list, hence the app (#28). The "Remote Desktop" entitlement:
@@ -93,7 +93,7 @@ only has to deliver them: the app refuses an altered feed
 
 ## Signing the Mac host
 
-The `Release` workflow's Mac job signs AetherDesk.app with a **Developer ID
+The `Release` workflow's Mac job signs Auroval.app with a **Developer ID
 Application** certificate (hardened runtime, nested code first:
 `packaging/macos/sign-app.sh`), notarizes and staples it, then signs the
 package with a **Developer ID Installer** certificate and notarizes and
@@ -163,9 +163,9 @@ time).
 **By hand on a Mac**, with the certificates in the login keychain:
 
 ```sh
-xcrun notarytool store-credentials aetherdesk \
+xcrun notarytool store-credentials auroval \
   --key AuthKey_XXXXXXXXXX.p8 --key-id <key id> --issuer <issuer id>
-NOTARY_PROFILE=aetherdesk SIGNING=developer-id SPARKLE_ED_PUBLIC_KEY=<public key> \
+NOTARY_PROFILE=auroval SIGNING=developer-id SPARKLE_ED_PUBLIC_KEY=<public key> \
   packaging/macos/release.sh 0.1.0-alpha.1 dist
 ```
 
@@ -173,5 +173,5 @@ Without `SIGNING=developer-id`, `release.sh` signs ad hoc and leaves the
 package unsigned, to try the packaging. CI builds the app and package that
 way (`app-bundle.sh`, `build-pkg.sh`) on every pull request that touches the
 host, and installs and uninstalls the package on the runner. `SKIP_NOTARIZE=1`
-only signs, to try the hardened runtime quickly. `aether-agent install`
+only signs, to try the hardened runtime quickly. `auroval-agent install`
 keeps a valid Developer ID signature; it re-signs other builds as before.

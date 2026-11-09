@@ -72,7 +72,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .devcontainer
-          tags: aetherdesk-dev
+          tags: auroval-dev
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -81,12 +81,12 @@ jobs:
           # NET_ADMIN: the e2e narrows the loopback's MTU for one check.
           docker run --rm --cap-add=NET_ADMIN -v "$PWD:/w:ro" -w /w \
             -e CARGO_TARGET_DIR=/tmp/target -e CARGO_TERM_COLOR -e RUSTFLAGS \
-            aetherdesk-dev bash -c '
+            auroval-dev bash -c '
               set -e
               cargo fmt --all --check
               cargo clippy --workspace --all-targets --locked
               cargo test --workspace --locked
-              cargo build -p aetherdesk-linux-client --bins --examples --features test-hooks --locked
+              cargo build -p auroval-linux-client --bins --examples --features test-hooks --locked
               scripts/e2e-fake-host.sh'
 
   workspace-macos:
@@ -107,27 +107,27 @@ jobs:
           zsh -n scripts/mac.zsh
       # What the release does, without the secrets: ad hoc signed, unsigned
       # package, no updater key.
-      - name: Build AetherDesk.app (with Sparkle) and the .pkg
+      - name: Build Auroval.app (with Sparkle) and the .pkg
         run: |
-          cargo build -p aetherdesk-mac-host --locked
-          packaging/macos/app-bundle.sh target/debug/aether-agent "$RUNNER_TEMP/app"
-          packaging/macos/build-pkg.sh "$RUNNER_TEMP/app/AetherDesk.app" "$RUNNER_TEMP/pkg"
-          test -d "$RUNNER_TEMP/app/AetherDesk.app/Contents/Frameworks/Sparkle.framework"
-          test -d "$RUNNER_TEMP/app/AetherDesk.app/Contents/PlugIns/AetherDesk.driver"
+          cargo build -p auroval-mac-host --locked
+          packaging/macos/app-bundle.sh target/debug/auroval-agent "$RUNNER_TEMP/app"
+          packaging/macos/build-pkg.sh "$RUNNER_TEMP/app/Auroval.app" "$RUNNER_TEMP/pkg"
+          test -d "$RUNNER_TEMP/app/Auroval.app/Contents/Frameworks/Sparkle.framework"
+          test -d "$RUNNER_TEMP/app/Auroval.app/Contents/PlugIns/Auroval.driver"
       # The runner's sudo needs no password: install the package for real,
       # check what the postinstall set up, then uninstall it again.
       - name: Install the .pkg, check it, uninstall
         run: |
-          app=/Applications/AetherDesk.app
-          daemon=system/nl.stormlantern.aetherdesk.daemon
-          sudo installer -pkg "$RUNNER_TEMP"/pkg/AetherDesk-*.pkg -target / ||
+          app=/Applications/Auroval.app
+          daemon=system/nl.stormlantern.auroval.daemon
+          sudo installer -pkg "$RUNNER_TEMP"/pkg/Auroval-*.pkg -target / ||
             { tail -n 40 /var/log/install.log; exit 1; }
           codesign --verify --deep --strict "$app"
-          test "$(cat '/Library/Application Support/AetherDesk/install-source')" = pkg
-          test "$(readlink /usr/local/bin/aether-agent)" = "$app/Contents/MacOS/aether-agent"
-          test -d /Library/Audio/Plug-Ins/HAL/AetherDesk.driver
+          test "$(cat '/Library/Application Support/Auroval/install-source')" = pkg
+          test "$(readlink /usr/local/bin/auroval-agent)" = "$app/Contents/MacOS/auroval-agent"
+          test -d /Library/Audio/Plug-Ins/HAL/Auroval.driver
           for f in daemon agent loginwindow menu; do
-            plutil -lint /Library/Launch*/nl.stormlantern.aetherdesk.$f.plist
+            plutil -lint /Library/Launch*/nl.stormlantern.auroval.$f.plist
           done
           running=false
           for _ in $(seq 50); do
@@ -136,15 +136,15 @@ jobs:
             fi
             sleep 0.2
           done
-          $running || { launchctl print "$daemon" || true; cat /Library/Logs/AetherDesk/daemon.log || true; exit 1; }
-          aether-agent version
-          sudo "$app/Contents/MacOS/aether-agent" _uninstall-root
+          $running || { launchctl print "$daemon" || true; cat /Library/Logs/Auroval/daemon.log || true; exit 1; }
+          auroval-agent version
+          sudo "$app/Contents/MacOS/auroval-agent" _uninstall-root
           test ! -e "$app"
-          test ! -e /usr/local/bin/aether-agent
-          test ! -e /Library/LaunchDaemons/nl.stormlantern.aetherdesk.daemon.plist
-          test ! -e /Library/Audio/Plug-Ins/HAL/AetherDesk.driver
+          test ! -e /usr/local/bin/auroval-agent
+          test ! -e /Library/LaunchDaemons/nl.stormlantern.auroval.daemon.plist
+          test ! -e /Library/Audio/Plug-Ins/HAL/Auroval.driver
           if launchctl print "$daemon" >/dev/null 2>&1; then echo "daemon still loaded"; exit 1; fi
-          if pkgutil --pkg-info nl.stormlantern.aetherdesk.pkg >/dev/null 2>&1; then
+          if pkgutil --pkg-info nl.stormlantern.auroval.pkg >/dev/null 2>&1; then
             echo "package receipt still there"; exit 1
           fi
 

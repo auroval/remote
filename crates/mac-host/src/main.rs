@@ -1,10 +1,10 @@
-//! AetherDesk host for macOS, one binary in three roles:
+//! Auroval host for macOS, one binary in three roles:
 //!
 //! - `daemon`: root LaunchDaemon, the network side; relays to an agent.
 //! - `agent`: LaunchAgent per GUI session (login window, user); captures,
 //!   encodes and injects.
 //! - `serve`: both in one process, for running by hand from a terminal.
-//! - `menu`: the menu-bar item with the updater; what AetherDesk.app does
+//! - `menu`: the menu-bar item with the updater; what Auroval.app does
 //!   when it's opened without arguments.
 
 #[cfg(target_os = "macos")]
@@ -100,14 +100,14 @@ fn main() {
         Some("_indicator") => indicator::run(&args[1..]),
         Some("version") | Some("--version") => {
             println!(
-                "aether-agent {} (protocol v{})",
+                "auroval-agent {} (protocol v{})",
                 env!("CARGO_PKG_VERSION"),
-                aetherdesk_proto::PROTOCOL_VERSION
+                auroval_proto::PROTOCOL_VERSION
             );
             Ok(())
         }
         _ => Err(format!(
-            "usage: aether-agent install|uninstall|status|restart|pair|clients|unpair|doctor|daemon|agent|serve|record|menu|version\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
+            "usage: auroval-agent install|uninstall|status|restart|pair|clients|unpair|doctor|daemon|agent|serve|record|menu|version\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
             install::USAGE,
             daemon::USAGE,
             admin::USAGE,
@@ -122,7 +122,7 @@ fn main() {
     }
 }
 
-/// Whether this binary was opened as an app: from inside AetherDesk.app,
+/// Whether this binary was opened as an app: from inside Auroval.app,
 /// and not from a terminal (there, no arguments shows the usage).
 #[cfg(target_os = "macos")]
 fn in_bundle() -> bool {
@@ -134,11 +134,11 @@ fn in_bundle() -> bool {
             .is_some()
 }
 
-/// `aether-agent _info-plist [--ed-key <public key>] [--feed <url>]`: the
+/// `auroval-agent _info-plist [--ed-key <public key>] [--feed <url>]`: the
 /// app's Info.plist, for packaging/macos/app-bundle.sh.
 #[cfg(target_os = "macos")]
 fn info_plist(args: &[String]) -> Result<(), String> {
-    let usage = "usage: aether-agent _info-plist [--ed-key <public key>] [--feed <url>]";
+    let usage = "usage: auroval-agent _info-plist [--ed-key <public key>] [--feed <url>]";
     let (mut key, mut feed) = (None, bundle::FEED_URL.to_string());
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -162,9 +162,9 @@ fn doctor() -> Result<(), String> {
     use objc2_core_graphics::{CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess};
 
     println!(
-        "aether-agent {} (protocol v{})",
+        "auroval-agent {} (protocol v{})",
         env!("CARGO_PKG_VERSION"),
-        aetherdesk_proto::PROTOCOL_VERSION
+        auroval_proto::PROTOCOL_VERSION
     );
     let screen = CGPreflightScreenCaptureAccess();
     let input = CGPreflightPostEventAccess();
@@ -187,7 +187,7 @@ fn doctor() -> Result<(), String> {
     let addresses = session::local_addresses();
     println!(
         "addresses (UDP port {} for serve):",
-        aetherdesk_proto::DEFAULT_PORT
+        auroval_proto::DEFAULT_PORT
     );
     for (interface, ip) in &addresses {
         println!("  {ip}  ({interface})");
@@ -204,6 +204,6 @@ fn doctor() -> Result<(), String> {
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    eprintln!("aether-agent only runs on macOS");
+    eprintln!("auroval-agent only runs on macOS");
     std::process::exit(1);
 }

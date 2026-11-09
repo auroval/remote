@@ -4,7 +4,7 @@
 # app refuses an unsigned or altered feed: SURequireSignedFeed). The release
 # workflow attaches it to the release; the Appcast workflow publishes it.
 #
-#   packaging/macos/appcast.sh <AetherDesk-<version>.pkg> <out.xml>
+#   packaging/macos/appcast.sh <Auroval-<version>.pkg> <out.xml>
 #
 # Version, build number and minimum macOS come from the app inside the
 # package, so the feed says what the package installs.
@@ -20,20 +20,20 @@ out=${2:?usage: appcast.sh <pkg> <out.xml>}
 here=$(cd "$(dirname "$0")" && pwd)
 key=${SPARKLE_ED_KEY_FILE:?set SPARKLE_ED_KEY_FILE to the private EdDSA key: see docs/RELEASING.md}
 bin=${SPARKLE_BIN:-$("$here/fetch-sparkle.sh" "${CARGO_TARGET_DIR:-target}/sparkle")/bin}
-repo=stormlantern-dev/aetherdesk
+repo=auroval/remote
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 pkgutil --expand-full "$pkg" "$work/pkg"
-plist=$work/pkg/AetherDesk-component.pkg/Payload/Applications/AetherDesk.app/Contents/Info.plist
+plist=$work/pkg/Auroval-component.pkg/Payload/Applications/Auroval.app/Contents/Info.plist
 plutil -extract SUPublicEDKey raw -o - "$plist" > /dev/null ||
 	{ echo "error: the app in $pkg has no SUPublicEDKey, so it can't check updates" >&2; exit 1; }
 version=$(plutil -extract CFBundleShortVersionString raw -o - "$plist")
 build=$(plutil -extract CFBundleVersion raw -o - "$plist")
 minimum=$(plutil -extract LSMinimumSystemVersion raw -o - "$plist")
-[ "$(basename "$pkg")" = "AetherDesk-$version.pkg" ] ||
-	{ echo "error: $pkg isn't the package of AetherDesk $version" >&2; exit 1; }
-url=https://github.com/$repo/releases/download/v$version/AetherDesk-$version.pkg
+[ "$(basename "$pkg")" = "Auroval-$version.pkg" ] ||
+	{ echo "error: $pkg isn't the package of Auroval $version" >&2; exit 1; }
+url=https://github.com/$repo/releases/download/v$version/Auroval-$version.pkg
 
 signature=$("$bin/sign_update" -p --ed-key-file "$key" "$pkg")
 grep -qE '^[A-Za-z0-9+/]{86}==$' <<<"$signature" ||
@@ -52,12 +52,12 @@ cat > "$out" <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
-    <title>AetherDesk host</title>
+    <title>Auroval host</title>
     <link>https://github.com/$repo</link>
-    <description>Updates of the AetherDesk host for macOS</description>
+    <description>Updates of the Auroval host for macOS</description>
     <language>en</language>
     <item>
-      <title>AetherDesk $version</title>
+      <title>Auroval $version</title>
       <pubDate>$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')</pubDate>
       <sparkle:version>$build</sparkle:version>
       <sparkle:shortVersionString>$version</sparkle:shortVersionString>

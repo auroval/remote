@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Signs AetherDesk.app with the Developer ID Application certificate
+# Signs Auroval.app with the Developer ID Application certificate
 # (hardened runtime, secure timestamp, inside out: sign-app.sh), checks it,
 # then notarizes and staples it (notarize.sh). Fails unless Apple accepts it.
 #
-#   packaging/macos/sign-notarize.sh <AetherDesk.app>
+#   packaging/macos/sign-notarize.sh <Auroval.app>
 #
 # Signing: the certificate must be in a keychain on the search list.
 # SIGN_IDENTITY picks it (a part of its name; default "Developer ID
@@ -13,7 +13,7 @@
 # for trying the hardened runtime locally.
 set -euo pipefail
 
-app=${1:?usage: sign-notarize.sh <AetherDesk.app>}
+app=${1:?usage: sign-notarize.sh <Auroval.app>}
 here=$(cd "$(dirname "$0")" && pwd)
 identity=${SIGN_IDENTITY:-Developer ID Application}
 

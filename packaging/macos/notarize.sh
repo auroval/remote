@@ -2,7 +2,7 @@
 # Notarizes an app bundle or an installer package and staples the ticket to
 # it, so Gatekeeper accepts it offline too. Fails unless Apple accepts it.
 #
-#   packaging/macos/notarize.sh <AetherDesk.app | something.pkg>
+#   packaging/macos/notarize.sh <Auroval.app | something.pkg>
 #
 # One of:
 #   NOTARY_PROFILE=<name>   a profile saved with `xcrun notarytool store-credentials`

@@ -56,7 +56,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .devcontainer
-          tags: aetherdesk-dev
+          tags: auroval-dev
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -67,7 +67,7 @@ jobs:
           mkdir -p dist && chmod 777 dist
           docker run --rm -v "$PWD:/w:ro" -v "$PWD/dist:/dist" -w /w \
             -e CARGO_TARGET_DIR=/tmp/target -e VERSION \
-            aetherdesk-dev bash -c 'packaging/linux/release-tarball.sh "$VERSION" /dist'
+            auroval-dev bash -c 'packaging/linux/release-tarball.sh "$VERSION" /dist'
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -159,15 +159,15 @@ jobs:
         env:
           VERSION: ${{ needs.release.outputs.version }}
         run: |
-          spctl --assess --type install --verbose=2 "dist/AetherDesk-$VERSION.pkg"
-          pkgutil --check-signature "dist/AetherDesk-$VERSION.pkg"
+          spctl --assess --type install --verbose=2 "dist/Auroval-$VERSION.pkg"
+          pkgutil --check-signature "dist/Auroval-$VERSION.pkg"
       # Attached to the release only; the Appcast workflow publishes it when
       # the maintainer says so (docs/RELEASING.md).
       - name: Sign the appcast
         env:
           VERSION: ${{ needs.release.outputs.version }}
           GH_TOKEN: ${{ github.token }}
-        run: packaging/macos/appcast.sh "dist/AetherDesk-$VERSION.pkg" dist/appcast.xml
+        run: packaging/macos/appcast.sh "dist/Auroval-$VERSION.pkg" dist/appcast.xml
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}

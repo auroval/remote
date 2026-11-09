@@ -1,8 +1,8 @@
 #!/bin/sh
-# Runs as root before the payload replaces /Applications/AetherDesk.app:
+# Runs as root before the payload replaces /Applications/Auroval.app:
 # stops the host, so no running binary gets overwritten. postinstall starts
 # it again. Output goes to /var/log/install.log.
-label=nl.stormlantern.aetherdesk
+label=nl.stormlantern.auroval
 
 stop() {
 	launchctl bootout "$1" 2>/dev/null || return 0

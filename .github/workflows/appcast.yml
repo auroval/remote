@@ -2,8 +2,8 @@ name: Appcast
 
 # Publishes a release's signed Sparkle appcast (the release workflow attaches
 # appcast.xml) on GitHub Pages, at the SUFeedURL every installed
-# AetherDesk.app checks daily:
-#   https://stormlantern-dev.github.io/aetherdesk/appcast.xml
+# Auroval.app checks daily:
+#   https://auroval.github.io/remote/appcast.xml
 # Run by hand once the release is tried, like merging the tap PR for the
 # casks (docs/RELEASING.md):
 #   gh workflow run appcast.yml -f tag=v0.1.0-alpha.5
