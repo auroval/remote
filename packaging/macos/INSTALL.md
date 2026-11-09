@@ -40,8 +40,9 @@ them once more (the old `auroval-agent` entries can go).
 During a session the Mac plays to the Auroval device, so its sound comes
 out on Linux and the Mac stays quiet. Apps with their own speaker setting
 (Teams, Zoom) can pick Auroval too. The Mac's volume keys do nothing
-meanwhile; use the volume on Linux. With `auroval --mic` on Linux,
-Auroval is also the Mac's microphone for the session. Afterwards the Mac's
+meanwhile; use the volume on Linux. Auroval is also the Mac's
+microphone for the session: it hears the microphone on Linux (unless the
+client runs with `--no-mic`). Afterwards the Mac's
 own devices are back.
 
 ## Pair a client

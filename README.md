@@ -18,6 +18,8 @@
 
 > **Status:** alpha. Use a Mac from Linux: a macOS host (Apple Silicon) streams its screen to a Linux client (Wayland, tested on Hyprland). See [Install](#install-alpha) to try it; the plan is in [docs/MVP-PLAN.md](docs/MVP-PLAN.md).
 
+> **Formerly AetherDesk.** Up to 0.1.0-alpha.6 this project was called AetherDesk. Host and client have to be updated together: the old and new versions don't talk to each other. `auroval-agent install` takes over an AetherDesk install on the Mac, pairings included, and the client picks up `~/.config/aetherdesk` by itself (the Flatpak can't see it: pair again, or `mv ~/.config/aetherdesk ~/.config/auroval` first). Grant Screen Recording and Accessibility once more, to the new path below.
+
 ## Goals
 
 - **Secure session lifecycle** — spawn and tear down sessions from a system daemon (PAM on Linux, native session management on macOS) instead of requiring a logged-in, unlocked desktop.
@@ -103,7 +105,7 @@ Away from home, connect to the Mac's VPN or Tailscale address: `auroval <address
 On Arch Linux and CachyOS you can also build and install the client with the PKGBUILD in [`packaging/arch/`](packaging/arch/); `pacman` then tracks the files:
 
 ```sh
-git clone https://github.com/auroval/remote
+git clone https://github.com/auroval/remote auroval
 cd auroval/packaging/arch/auroval-git   # latest main; or ../auroval for the tagged release
 makepkg -si
 ```
@@ -164,7 +166,7 @@ If Right Ctrl is taken (a compose key, a `$mainMod` variant), pick another key: 
 
 While connected, text copied on either side can be pasted on the other (up to 1 MiB, plain text; only copies made during the session, and never logged). `auroval --no-clipboard` turns that off both ways.
 
-The Mac's sound plays on Linux (Opus, 48 kHz stereo, about 30 ms of buffer; more with `AUROVAL_AUDIO_MS=60` on a jittery network). The installed host adds an audio device, **Auroval**, and makes it the Mac's output during a session: the Mac stays quiet, apps with their own speaker setting (Teams) can pick Auroval too, and muting the Mac doesn't silence Linux. The Mac's volume keys do nothing meanwhile; use the volume on Linux. At the login window, and with `serve`, the host captures the sound instead (covered by Screen & System Audio Recording) and mutes the Mac. `auroval --no-audio` turns sound off; the Mac then keeps its own output. `auroval --mic` also sends this microphone to the Mac: during the session Auroval is the Mac's input too, so a call on the Mac (pick Auroval, or the system default) hears you and can cancel its own echo. It needs the installed host and an FFmpeg with libopus.
+The Mac's sound plays on Linux (Opus, 48 kHz stereo, about 30 ms of buffer; more with `AUROVAL_AUDIO_MS=60` on a jittery network). The installed host adds an audio device, **Auroval**, and makes it the Mac's output during a session: the Mac stays quiet, apps with their own speaker setting (Teams) can pick Auroval too, and muting the Mac doesn't silence Linux. The Mac's volume keys do nothing meanwhile; use the volume on Linux. At the login window, and with `serve`, the host captures the sound instead (covered by Screen & System Audio Recording) and mutes the Mac. `auroval --no-audio` turns sound off; the Mac then keeps its own output. The client also sends its microphone to the Mac: during the session Auroval is the Mac's input too, so a call on the Mac (pick Auroval, or the system default) hears you and can cancel its own echo. It needs the installed host and an FFmpeg with libopus; `auroval --no-mic` keeps the microphone on Linux.
 
 While a client is connected, the Mac shows it: an orange border round the screen for a few seconds, then a small badge with the client's name in the top right corner, for whoever sits at the Mac. Clicks pass through it, and the client's picture doesn't include it. (Not at the login window.)
 

@@ -7,8 +7,8 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use auroval_proto::{Codec, HostControl, InputEvent, picture_size, worth_resizing};
 use anyhow::Context;
+use auroval_proto::{Codec, HostControl, InputEvent, picture_size, worth_resizing};
 use objc2_core_graphics::CGPreflightPostEventAccess;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;

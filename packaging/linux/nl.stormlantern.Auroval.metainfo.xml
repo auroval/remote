@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>nl.stormlantern.AetherDesk</id>
-  <name>AetherDesk</name>
+  <id>nl.stormlantern.Auroval</id>
+  <name>Auroval</name>
   <summary>Control a Mac from your Linux desktop</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>Apache-2.0 OR MIT</project_license>
@@ -10,20 +10,20 @@
   </developer>
   <description>
     <p>
-      AetherDesk shows a Mac's screen in a window on Linux (Wayland) and sends
+      Auroval shows a Mac's screen in a window on Linux (Wayland) and sends
       your keyboard, mouse, clipboard and the Mac's sound across, over the local
-      network or further. The Mac runs the AetherDesk host, installed separately.
+      network or further. The Mac runs the Auroval host, installed separately.
     </p>
     <p>
       This is an alpha. Before the first connection, install the host on the
-      Mac and pair this client with it: run "sudo aether-agent pair" on the Mac,
-      then "aetherdesk pair" on Linux.
+      Mac and pair this client with it: run "sudo auroval-agent pair" on the Mac,
+      then "auroval pair" on Linux.
     </p>
   </description>
-  <launchable type="desktop-id">nl.stormlantern.AetherDesk.desktop</launchable>
-  <url type="homepage">https://github.com/stormlantern-dev/aetherdesk</url>
-  <url type="bugtracker">https://github.com/stormlantern-dev/aetherdesk/issues</url>
-  <url type="vcs-browser">https://github.com/stormlantern-dev/aetherdesk</url>
+  <launchable type="desktop-id">nl.stormlantern.Auroval.desktop</launchable>
+  <url type="homepage">https://github.com/auroval/remote</url>
+  <url type="bugtracker">https://github.com/auroval/remote/issues</url>
+  <url type="vcs-browser">https://github.com/auroval/remote</url>
   <categories>
     <category>Network</category>
     <category>RemoteAccess</category>
@@ -37,6 +37,9 @@
   </supports>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.1.0-alpha.7" date="2026-11-09" type="development"/>
+    <release version="0.1.0-alpha.6" date="2026-11-09" type="development"/>
+    <release version="0.1.0-alpha.5" date="2026-11-06" type="development"/>
     <release version="0.1.0-alpha.4" date="2026-11-04" type="development"/>
     <release version="0.1.0-alpha.3" date="2026-10-31" type="development"/>
   </releases>

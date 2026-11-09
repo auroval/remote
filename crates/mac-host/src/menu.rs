@@ -20,7 +20,10 @@ use objc2_app_kit::{
     NSAlert, NSApplication, NSApplicationActivationPolicy, NSImage, NSMenu, NSMenuDelegate,
     NSMenuItem, NSStatusBar, NSVariableStatusItemLength,
 };
-use objc2_core_graphics::{CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess};
+use objc2_core_graphics::{
+    CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess, CGRequestPostEventAccess,
+    CGRequestScreenCaptureAccess,
+};
 use objc2_foundation::{NSBundle, NSObject, NSString, ns_string};
 
 use crate::install;
@@ -228,6 +231,20 @@ fn single_instance() -> Result<bool, String> {
     Ok(true)
 }
 
+/// Asks macOS for the two permissions the agent needs. The first time, this
+/// puts Auroval in both lists under Privacy & Security (with the system's
+/// own prompt), so granting is a switch to turn on rather than + and a path.
+/// Later calls change nothing. The agent is the same app, so what's granted
+/// here is granted to it.
+fn request_permissions() {
+    if !CGPreflightScreenCaptureAccess() {
+        CGRequestScreenCaptureAccess();
+    }
+    if !CGPreflightPostEventAccess() {
+        CGRequestPostEventAccess();
+    }
+}
+
 /// `auroval-agent menu`, or Auroval.app opened without arguments.
 pub fn run(_args: &[String]) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
@@ -239,6 +256,7 @@ pub fn run(_args: &[String]) -> Result<(), String> {
     // No Dock icon (the Info.plist says so too: LSUIElement).
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
+    request_permissions();
     let updater = start_updater();
     match &updater {
         Ok(_) => println!("updater started"),

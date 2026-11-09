@@ -22,6 +22,18 @@ use std::process::Command;
 
 use crate::bundle;
 
+/// The install from before the rename (AetherDesk, up to 0.1.0-alpha.6):
+/// `install` takes it over and `uninstall` removes it.
+mod legacy {
+    pub const LABEL: &str = "nl.stormlantern.aetherdesk";
+    pub const DEST: &str = "/Library/Application Support/AetherDesk";
+    pub const LOGS: &str = "/Library/Logs/AetherDesk";
+    pub const DRIVER: &str = "/Library/Audio/Plug-Ins/HAL/AetherDesk.driver";
+    pub const RUN: &str = "/var/run/aetherdesk";
+    /// The self-signed identity `install` used to look for.
+    pub const IDENTITY: &str = "AetherDesk Dev";
+}
+
 const LABEL: &str = "nl.stormlantern.auroval";
 /// The host's data: identity, pairings ([`crate::trust::SYSTEM_DIR`]).
 const DEST: &str = "/Library/Application Support/Auroval";
@@ -265,12 +277,20 @@ fn wrap_in_bundle(me: &Path, app: &Path) -> Result<(), String> {
 /// it. Nested code first, the app last; the audio device keeps its own
 /// signature (coreaudiod takes ad hoc).
 fn sign_for_development(app: &Path) -> Result<(), String> {
-    let identity = std::env::var("AUROVAL_IDENTITY").unwrap_or_else(|_| "Auroval Dev".into());
-    let have_identity = Command::new("security")
+    let identities = Command::new("security")
         .args(["find-identity", "-p", "codesigning"])
         .output()
-        // codesign takes the start of a name too ("Developer ID Application").
-        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{identity}")));
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    // codesign takes the start of a name too ("Developer ID Application").
+    let have = |name: &str| identities.contains(&format!("\"{name}"));
+    let identity = match std::env::var("AUROVAL_IDENTITY") {
+        Ok(name) => name,
+        // Made before the rename: keep using it rather than ask for a new one.
+        Err(_) if !have("Auroval Dev") && have(legacy::IDENTITY) => legacy::IDENTITY.into(),
+        Err(_) => "Auroval Dev".into(),
+    };
+    let have_identity = have(&identity);
     let sign_as = if have_identity {
         identity.as_str()
     } else {
@@ -337,9 +357,9 @@ fn install_staged(app: &Path, source: &str) -> Result<(), String> {
     }
     start_user_jobs(uid())?;
     println!(
-        "\nInstalled {}. Once, grant Auroval both Screen Recording and Accessibility in \
-         System Settings → Privacy & Security (+ button, then pick Auroval in \
-         Applications), then run: auroval-agent restart\nTo let a client in: sudo auroval-agent pair",
+        "\nInstalled {}. Once, turn Auroval on under both Screen Recording and \
+         Accessibility in System Settings → Privacy & Security (macOS asks, and the \
+         Auroval menu-bar item links there), then run: auroval-agent restart\nTo let a client in: sudo auroval-agent pair",
         bundle::APP
     );
     Ok(())
@@ -388,6 +408,7 @@ pub fn postinstall(_args: &[String]) -> Result<(), String> {
 fn setup_root(source: &str) -> Result<(), String> {
     let io = |what: &str, e: std::io::Error| format!("{what}: {e}");
     unload(&format!("system/{LABEL}.daemon"));
+    let had_legacy_driver = remove_legacy(true);
     std::fs::create_dir_all(DEST).map_err(|e| io(DEST, e))?;
     std::fs::create_dir_all(LOGS).map_err(|e| io(LOGS, e))?;
     // The user's agent writes its log here too.
@@ -459,6 +480,8 @@ fn setup_root(source: &str) -> Result<(), String> {
     let driver = Path::new(bundle::APP).join(bundle::DRIVER_IN_BUNDLE);
     if driver.is_dir() {
         install_driver(&driver)?;
+    } else if had_legacy_driver {
+        restart_coreaudio();
     }
     run(
         "launchctl",
@@ -486,6 +509,37 @@ fn link_cli() {
     if let Err(e) = made {
         eprintln!("warning: linking {CLI_LINK}: {e}");
     }
+}
+
+/// Stops and removes the install from before the rename. With `adopt`,
+/// its directory (the host's identity and paired clients) becomes ours, so
+/// clients needn't pair again. Returns whether it removed the old audio
+/// device, which needs a coreaudiod restart.
+fn remove_legacy(adopt: bool) -> bool {
+    unload(&format!("system/{}.daemon", legacy::LABEL));
+    if let Some(user) = console_uid() {
+        unload(&format!("gui/{user}/{}.agent", legacy::LABEL));
+    }
+    for name in ["daemon", "agent", "loginwindow"] {
+        let dir = if name == "daemon" {
+            "LaunchDaemons"
+        } else {
+            "LaunchAgents"
+        };
+        let _ = std::fs::remove_file(format!("/Library/{dir}/{}.{name}.plist", legacy::LABEL));
+    }
+    if adopt {
+        auroval_proto::trust::adopt_legacy_dir(Path::new(legacy::DEST), Path::new(DEST));
+        let _ = std::fs::remove_file(Path::new(DEST).join("aether-agent"));
+    }
+    for dir in [legacy::DEST, legacy::LOGS, legacy::RUN] {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    let driver = Path::new(legacy::DRIVER).exists();
+    if driver {
+        let _ = std::fs::remove_dir_all(legacy::DRIVER);
+    }
+    driver
 }
 
 /// Puts the audio device in place and restarts coreaudiod to load it; not
@@ -558,7 +612,8 @@ pub fn uninstall_root(_args: &[String]) -> Result<(), String> {
     for dir in [bundle::APP, DEST, LOGS, "/var/run/auroval"] {
         let _ = std::fs::remove_dir_all(dir);
     }
-    if Path::new(DRIVER).exists() {
+    let had_legacy_driver = remove_legacy(false);
+    if Path::new(DRIVER).exists() || had_legacy_driver {
         let _ = std::fs::remove_dir_all(DRIVER);
         restart_coreaudio();
     }

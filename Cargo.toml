@@ -5,14 +5,14 @@ members = ["crates/*"]
 exclude = ["spikes"]
 
 [workspace.package]
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.7"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/stormlantern-dev/aetherdesk"
+repository = "https://github.com/auroval/remote"
 publish = false
 
 [workspace.dependencies]
-aetherdesk-proto = { path = "crates/proto" }
+auroval-proto = { path = "crates/proto" }
 anyhow = "1"
 getrandom = "0.4"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }

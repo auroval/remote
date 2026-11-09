@@ -33,6 +33,11 @@ and for the Mac an installer package that updates itself (Sparkle).
    All Mac parts come from `packaging/macos/release.sh` (which uses
    `app-bundle.sh`, `sign-notarize.sh` and `build-pkg.sh`) and
    `packaging/macos/appcast.sh`.
+
+   Each artifact (the Linux tarball and Flatpak, the host's `.pkg` and
+   tarball) also gets a CycloneDX SBOM (`.cdx.json`, its Rust dependencies,
+   from `packaging/sbom.sh`) and signed attestations of its build provenance
+   and SBOM, checkable with `gh attestation verify` (SECURITY.md).
 3. **Casks.** With a checkout of the tap:
 
    ```sh
