@@ -21,9 +21,9 @@
     </p>
   </description>
   <launchable type="desktop-id">nl.stormlantern.Auroval.desktop</launchable>
-  <url type="homepage">https://github.com/stormlantern-dev/aetherdesk</url>
-  <url type="bugtracker">https://github.com/stormlantern-dev/aetherdesk/issues</url>
-  <url type="vcs-browser">https://github.com/stormlantern-dev/aetherdesk</url>
+  <url type="homepage">https://github.com/auroval/remote</url>
+  <url type="bugtracker">https://github.com/auroval/remote/issues</url>
+  <url type="vcs-browser">https://github.com/auroval/remote</url>
   <categories>
     <category>Network</category>
     <category>RemoteAccess</category>

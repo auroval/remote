@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/stormlantern-dev/aetherdesk/actions/workflows/ci.yml"><img src="https://github.com/stormlantern-dev/aetherdesk/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="https://github.com/stormlantern-dev/aetherdesk/releases"><img src="https://img.shields.io/github/v/release/stormlantern-dev/aetherdesk?include_prereleases&sort=semver&label=release" alt="Latest release"></a>
+  <a href="https://github.com/auroval/remote/actions/workflows/ci.yml"><img src="https://github.com/auroval/remote/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/auroval/remote/releases"><img src="https://img.shields.io/github/v/release/auroval/remote?include_prereleases&sort=semver&label=release" alt="Latest release"></a>
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue" alt="License: MIT or Apache-2.0"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux-555" alt="Platforms: macOS and Linux">
   <a href="https://github.com/stormlantern-dev/homebrew-tap"><img src="https://img.shields.io/badge/homebrew-stormlantern--dev%2Ftap-orange" alt="Homebrew tap"></a>
@@ -49,7 +49,7 @@ Then, **once**, open System Settings → Privacy & Security and add `/Library/Ap
 
 ### 2. On Linux
 
-Download `auroval-<version>-x86_64.flatpak` from the [latest release](https://github.com/stormlantern-dev/aetherdesk/releases) and install it:
+Download `auroval-<version>-x86_64.flatpak` from the [latest release](https://github.com/auroval/remote/releases) and install it:
 
 ```sh
 flatpak install --user auroval-<version>-x86_64.flatpak
@@ -103,7 +103,7 @@ Away from home, connect to the Mac's VPN or Tailscale address: `auroval <address
 On Arch Linux and CachyOS you can also build and install the client with the PKGBUILD in [`packaging/arch/`](packaging/arch/); `pacman` then tracks the files:
 
 ```sh
-git clone https://github.com/stormlantern-dev/aetherdesk
+git clone https://github.com/auroval/remote auroval
 cd auroval/packaging/arch/auroval-git   # latest main; or ../auroval for the tagged release
 makepkg -si
 ```
