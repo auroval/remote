@@ -37,9 +37,18 @@ impl Injector {
             Action::Key {
                 keycode,
                 down,
+                repeat,
                 flags,
             } => {
-                self.post(CGEvent::new_keyboard_event(source, keycode, down), flags);
+                let event = CGEvent::new_keyboard_event(source, keycode, down);
+                if let (Some(event), true) = (&event, repeat) {
+                    CGEvent::set_integer_value_field(
+                        Some(event),
+                        CGEventField::KeyboardEventAutorepeat,
+                        1,
+                    );
+                }
+                self.post(event, flags);
             }
             Action::Move {
                 at,
