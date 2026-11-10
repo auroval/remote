@@ -270,15 +270,18 @@ impl PairWindow {
 fn instructions() -> String {
     let mut text = String::from(
         "On the computer that should connect to this Mac, run:\n\n    auroval pair\n\n\
-         It finds this Mac on the local network.",
+         (with the Flatpak: flatpak run nl.stormlantern.Auroval pair). It finds this Mac \
+         on the local network.",
     );
-    let addresses = crate::session::local_addresses();
+    let addresses: Vec<String> = crate::session::local_addresses()
+        .iter()
+        .map(|(_, ip)| ip.to_string())
+        .collect();
     if !addresses.is_empty() {
-        let list: Vec<String> = addresses
-            .iter()
-            .map(|(_, ip)| format!("auroval pair {ip}"))
-            .collect();
-        text.push_str(&format!(" If it doesn't, run {}.", list.join(" or ")));
+        text.push_str(&format!(
+            " If it doesn't, add this Mac's address: {}.",
+            addresses.join(" or ")
+        ));
     }
     text
 }
