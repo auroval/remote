@@ -2,7 +2,6 @@
 //! They work on the same files the daemon reads (see [`crate::trust`]), so
 //! they need no running daemon and no channel to it.
 
-use std::collections::HashSet;
 use std::time::Duration;
 
 use auroval_proto::DEFAULT_PORT;
@@ -76,7 +75,7 @@ pub fn pair(args: &[String]) -> Result<(), String> {
     let id = store
         .identity()
         .map_err(|e| format!("identity in {}: {e}", store.dir().display()))?;
-    let before: HashSet<_> = clients(&store)?.iter().map(|c| c.fingerprint).collect();
+    let before = store.clients_changed();
     let pairing = store.open_pairing().map_err(|e| e.to_string())?;
 
     let port = if o.port == DEFAULT_PORT {
@@ -112,9 +111,12 @@ pub fn pair(args: &[String]) -> Result<(), String> {
                     return Err("cancelled; pairing is closed".into());
                 }
             }
-            let now = clients(&store)?;
-            if let Some(c) = now.iter().find(|c| !before.contains(&c.fingerprint)) {
-                println!("Paired with {} ({}).", c.name, c.fingerprint.short());
+            // Rewritten when a client pairs, also one paired before (it's
+            // last then); comparing fingerprints missed that one.
+            if store.clients_changed() != before {
+                if let Some(c) = clients(&store)?.last() {
+                    println!("Paired with {} ({}).", c.name, c.fingerprint.short());
+                }
                 return Ok(());
             }
             if store.pairing().is_none() {

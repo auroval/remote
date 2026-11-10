@@ -42,16 +42,6 @@ define_class!(
     struct Actions;
 
     impl Actions {
-        #[unsafe(method(showPairing:))]
-        fn show_pairing(&self, _sender: Option<&AnyObject>) {
-            alert(
-                self.mtm(),
-                "Pair a client",
-                "In Terminal, run:\n\n    sudo auroval-agent pair\n\nIt shows a 6-digit code for \
-                 2 minutes. On Linux, run auroval pair and type the code.",
-            );
-        }
-
         #[unsafe(method(showUninstall:))]
         fn show_uninstall(&self, _sender: Option<&AnyObject>) {
             alert(
@@ -258,11 +248,12 @@ pub fn run(_args: &[String]) -> Result<(), String> {
     }
     menu.addItem(&actions_items.0);
     menu.addItem(&actions_items.1);
+    let pair = crate::pairwindow::PairWindow::new(mtm);
     menu.addItem(&item(
         mtm,
         "Pair a Client…",
         Some(sel!(showPairing:)),
-        Some(target),
+        Some(&pair),
     ));
     menu.addItem(&NSMenuItem::separatorItem(mtm));
     match &updater {
@@ -300,6 +291,6 @@ pub fn run(_args: &[String]) -> Result<(), String> {
 
     app.run();
     // terminate: exits before this; keep everything alive until then.
-    drop((status, actions, setup, updater));
+    drop((status, actions, setup, pair, updater));
     Ok(())
 }
