@@ -184,6 +184,10 @@ impl PairWindow {
         let window = &self.ivars().window;
         window.center();
         window.makeKeyAndOrderFront(None);
+        // A menu-bar app's request to come forward is often ignored (and
+        // after the password dialog macOS hands focus back to the app that
+        // had it), so put the window on top regardless.
+        window.orderFrontRegardless();
         #[allow(deprecated)]
         NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
     }
@@ -206,6 +210,8 @@ impl PairWindow {
                 ),
                 Some(Ok(())) => {
                     *ivars.phase.borrow_mut() = Phase::Open;
+                    // Back on top after the password dialog.
+                    self.front();
                     (String::new(), "Opening pairing…".into(), false)
                 }
                 Some(Err(None)) => {
