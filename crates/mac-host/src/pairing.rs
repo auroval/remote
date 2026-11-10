@@ -82,7 +82,6 @@ pub use mac::*;
 
 #[cfg(target_os = "macos")]
 mod mac {
-    use std::collections::HashSet;
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     use std::path::PathBuf;
@@ -210,15 +209,7 @@ mod mac {
         store
             .identity()
             .map_err(|e| format!("this Mac's identity: {e}"))?;
-        let fingerprints = |store: &Store| -> Result<HashSet<_>, String> {
-            Ok(store
-                .clients()
-                .map_err(|e| format!("paired clients: {e}"))?
-                .iter()
-                .map(|c| c.fingerprint)
-                .collect())
-        };
-        let before = fingerprints(store)?;
+        let before = store.clients_changed();
         let pairing = store.open_pairing().map_err(|e| e.to_string())?;
         report(&Status::Open {
             code: pairing.code.clone(),
@@ -232,12 +223,14 @@ mod mac {
                 report(&Status::Cancelled);
                 return Ok(());
             }
-            let now = store
-                .clients()
-                .map_err(|e| format!("paired clients: {e}"))?;
-            if let Some(c) = now.iter().find(|c| !before.contains(&c.fingerprint)) {
+            if store.clients_changed() != before {
+                // The one just paired is last, also when it was paired before.
+                let now = store
+                    .clients()
+                    .map_err(|e| format!("paired clients: {e}"))?;
+                let name = now.last().map_or_else(String::new, |c| c.name.clone());
                 store.close_pairing();
-                report(&Status::Paired(c.name.clone()));
+                report(&Status::Paired(name));
                 return Ok(());
             }
             if store.pairing().is_none() {
