@@ -258,6 +258,21 @@ pub fn input_allowed() -> bool {
     CGPreflightPostEventAccess() || unsafe { AXIsProcessTrusted() }
 }
 
+/// [`input_allowed`], asked by a fresh process. A process keeps the first
+/// answer it got: it would only hear of a change through a notification
+/// that needs an AppKit run loop, which the agent doesn't have. So the
+/// agent, started before the switch was turned on, kept saying no.
+pub fn input_allowed_now() -> bool {
+    match std::env::current_exe() {
+        Ok(me) => std::process::Command::new(me)
+            .arg("_input-allowed")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or_else(|_| input_allowed()),
+        Err(_) => input_allowed(),
+    }
+}
+
 /// Whether either permission is missing, so the window should open.
 pub fn needed() -> bool {
     !input_allowed() || !CGPreflightScreenCaptureAccess()

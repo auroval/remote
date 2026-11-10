@@ -100,6 +100,7 @@ fn main() {
         Some("_postinstall") => install::postinstall(&args[1..]),
         Some("_info-plist") => info_plist(&args[1..]),
         Some("_indicator") => indicator::run(&args[1..]),
+        Some("_input-allowed") => std::process::exit(if setup::input_allowed() { 0 } else { 1 }),
         Some("version") | Some("--version") => {
             println!(
                 "auroval-agent {} (protocol v{})",
