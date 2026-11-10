@@ -14,8 +14,7 @@ use auroval_proto::quic;
 use auroval_proto::trust::Identity;
 use auroval_proto::{Codec, DEFAULT_PORT, HostControl, picture_size, worth_resizing};
 use objc2_core_graphics::{
-    CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess, CGRequestPostEventAccess,
-    CGRequestScreenCaptureAccess,
+    CGPreflightScreenCaptureAccess, CGRequestPostEventAccess, CGRequestScreenCaptureAccess,
 };
 
 use crate::capture::{self, Display};
@@ -90,7 +89,7 @@ pub fn check_permissions(who: &str, then: &str, ask: bool) -> Result<(), String>
     // Both checked (and both prompts asked for) before reporting, so a
     // missing Screen Recording doesn't hide a missing Accessibility.
     let screen = CGPreflightScreenCaptureAccess();
-    let input = CGPreflightPostEventAccess();
+    let input = crate::setup::input_allowed();
     if !screen && ask {
         CGRequestScreenCaptureAccess();
     }

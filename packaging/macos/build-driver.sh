@@ -17,5 +17,11 @@ clang -arch arm64 -O2 -Wall -Wextra -Wno-unused-parameter -Werror -mmacosx-versi
 	-bundle -o "$bundle/Contents/MacOS/Auroval" "$src/driver.c" \
 	-framework CoreFoundation -framework CoreAudio
 cp "$src/Info.plist" "$bundle/Contents/"
+# What the install compares to decide whether coreaudiod must restart (it
+# loads plug-ins only when it starts). Not the files: their signature
+# differs with every build, and the restart makes every app with sound
+# reconnect, which can bog a Mac down for minutes.
+revision=$(cat "$src/driver.c" "$src/shared.h" "$src/Info.plist" | shasum -a 256 | cut -c1-16)
+/usr/libexec/PlistBuddy -c "Add :AurovalDriverRevision string $revision" "$bundle/Contents/Info.plist"
 codesign --force --sign - "$bundle"
 echo "$bundle"

@@ -64,6 +64,8 @@ mod serve;
 #[cfg(target_os = "macos")]
 mod session;
 #[cfg(target_os = "macos")]
+mod setup;
+#[cfg(target_os = "macos")]
 mod speaker;
 #[cfg(target_os = "macos")]
 mod stream;
@@ -98,6 +100,7 @@ fn main() {
         Some("_postinstall") => install::postinstall(&args[1..]),
         Some("_info-plist") => info_plist(&args[1..]),
         Some("_indicator") => indicator::run(&args[1..]),
+        Some("_input-allowed") => std::process::exit(if setup::input_allowed() { 0 } else { 1 }),
         Some("version") | Some("--version") => {
             println!(
                 "auroval-agent {} (protocol v{})",
@@ -159,7 +162,7 @@ fn info_plist(args: &[String]) -> Result<(), String> {
 /// easy to spot (and to paste into a bug report).
 #[cfg(target_os = "macos")]
 fn doctor() -> Result<(), String> {
-    use objc2_core_graphics::{CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess};
+    use objc2_core_graphics::CGPreflightScreenCaptureAccess;
 
     println!(
         "auroval-agent {} (protocol v{})",
@@ -167,7 +170,7 @@ fn doctor() -> Result<(), String> {
         auroval_proto::PROTOCOL_VERSION
     );
     let screen = CGPreflightScreenCaptureAccess();
-    let input = CGPreflightPostEventAccess();
+    let input = crate::setup::input_allowed();
     let status = |ok: bool| if ok { "ok" } else { "MISSING" };
     println!("screen recording permission: {}", status(screen));
     println!("accessibility permission:    {}", status(input));

@@ -34,7 +34,7 @@ mod legacy {
     pub const IDENTITY: &str = "AetherDesk Dev";
 }
 
-const LABEL: &str = "nl.stormlantern.auroval";
+pub const LABEL: &str = "nl.stormlantern.auroval";
 /// The host's data: identity, pairings ([`crate::trust::SYSTEM_DIR`]).
 const DEST: &str = "/Library/Application Support/Auroval";
 /// Where the binary was installed before the app bundle; removed on install.
@@ -567,14 +567,16 @@ fn remove_legacy(adopt: bool) -> bool {
 }
 
 /// Puts the audio device in place and restarts coreaudiod to load it; not
-/// when it's unchanged, since the restart cuts the Mac's sound for a moment.
+/// when it's unchanged. The restart cuts the Mac's sound, and every app
+/// with sound reconnects: on a Mac with many of them that kept coreaudiod
+/// and those apps busy for minutes.
+///
+/// Unchanged means the same `AurovalDriverRevision` (a hash of the
+/// driver's source, from build-driver.sh): the files themselves differ with
+/// every build, since each is signed anew.
 fn install_driver(staged: &Path) -> Result<(), String> {
-    let files = ["Contents/MacOS/Auroval", "Contents/Info.plist"];
-    let unchanged = files.iter().all(|f| {
-        let new = std::fs::read(staged.join(f));
-        new.is_ok() && new.ok() == std::fs::read(Path::new(DRIVER).join(f)).ok()
-    });
-    if unchanged {
+    let installed = driver_revision(Path::new(DRIVER));
+    if installed.is_some() && installed == driver_revision(staged) {
         println!("audio device: unchanged");
         return Ok(());
     }
@@ -584,6 +586,16 @@ fn install_driver(staged: &Path) -> Result<(), String> {
     restart_coreaudio();
     println!("audio device installed (the Mac's sound paused for a moment)");
     Ok(())
+}
+
+fn driver_revision(driver: &Path) -> Option<String> {
+    let out = Command::new("plutil")
+        .args(["-extract", "AurovalDriverRevision", "raw", "-o", "-"])
+        .arg(driver.join("Contents/Info.plist"))
+        .output()
+        .ok()?;
+    let revision = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !revision.is_empty()).then_some(revision)
 }
 
 /// coreaudiod loads and drops plug-ins only when it starts; launchd starts
