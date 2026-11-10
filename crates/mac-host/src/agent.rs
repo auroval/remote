@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use anyhow::Context;
 use auroval_proto::{Codec, HostControl, InputEvent, picture_size, worth_resizing};
-use objc2_core_graphics::CGPreflightPostEventAccess;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -389,7 +388,7 @@ fn start(
 ) -> anyhow::Result<Active> {
     // Checked again here: the permission may have changed since we started.
     let user_session = unsafe { libc::getuid() } != 0;
-    if !CGPreflightPostEventAccess() {
+    if !crate::setup::input_allowed() {
         println!("warning: no Accessibility permission now; input won't work");
         if user_session {
             // The picture still goes out; someone at the Mac can fix input.

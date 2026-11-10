@@ -20,7 +20,7 @@ use objc2_app_kit::{
     NSAlert, NSApplication, NSApplicationActivationPolicy, NSImage, NSMenu, NSMenuDelegate,
     NSMenuItem, NSStatusBar, NSVariableStatusItemLength,
 };
-use objc2_core_graphics::{CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess};
+use objc2_core_graphics::CGPreflightScreenCaptureAccess;
 use objc2_foundation::{NSBundle, NSObject, NSString, ns_string};
 
 use crate::install;
@@ -106,7 +106,7 @@ impl Actions {
         ));
         items
             .accessibility
-            .setTitle(&permission(CGPreflightPostEventAccess(), "Accessibility"));
+            .setTitle(&permission(crate::setup::input_allowed(), "Accessibility"));
     }
 }
 

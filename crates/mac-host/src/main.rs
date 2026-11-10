@@ -161,7 +161,7 @@ fn info_plist(args: &[String]) -> Result<(), String> {
 /// easy to spot (and to paste into a bug report).
 #[cfg(target_os = "macos")]
 fn doctor() -> Result<(), String> {
-    use objc2_core_graphics::{CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess};
+    use objc2_core_graphics::CGPreflightScreenCaptureAccess;
 
     println!(
         "auroval-agent {} (protocol v{})",
@@ -169,7 +169,7 @@ fn doctor() -> Result<(), String> {
         auroval_proto::PROTOCOL_VERSION
     );
     let screen = CGPreflightScreenCaptureAccess();
-    let input = CGPreflightPostEventAccess();
+    let input = crate::setup::input_allowed();
     let status = |ok: bool| if ok { "ok" } else { "MISSING" };
     println!("screen recording permission: {}", status(screen));
     println!("accessibility permission:    {}", status(input));

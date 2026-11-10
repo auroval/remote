@@ -223,7 +223,7 @@ impl Setup {
 
     fn update(&self) {
         let ivars = self.ivars();
-        let accessibility = CGPreflightPostEventAccess();
+        let accessibility = input_allowed();
         let screen = CGPreflightScreenCaptureAccess();
         ivars.accessibility.setHidden(accessibility);
         ivars.accessibility_done.setHidden(!accessibility);
@@ -245,9 +245,22 @@ impl Setup {
     }
 }
 
+/// Whether macOS lets Auroval send keyboard and mouse events. Either
+/// permission does: Accessibility (the switch people see and turn on) or
+/// PostEvent (what `CGRequestPostEventAccess` asks for). Checking PostEvent
+/// alone missed an Accessibility switch that was on, when an old PostEvent
+/// entry from a differently signed build was still around.
+pub fn input_allowed() -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    unsafe extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+    CGPreflightPostEventAccess() || unsafe { AXIsProcessTrusted() }
+}
+
 /// Whether either permission is missing, so the window should open.
 pub fn needed() -> bool {
-    !CGPreflightPostEventAccess() || !CGPreflightScreenCaptureAccess()
+    !input_allowed() || !CGPreflightScreenCaptureAccess()
 }
 
 /// Asks the menu, in this user's session, to open the setup window; starts
