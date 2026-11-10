@@ -64,6 +64,8 @@ mod serve;
 #[cfg(target_os = "macos")]
 mod session;
 #[cfg(target_os = "macos")]
+mod setup;
+#[cfg(target_os = "macos")]
 mod speaker;
 #[cfg(target_os = "macos")]
 mod stream;

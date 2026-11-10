@@ -48,6 +48,10 @@ pub const CLOSE_CODEC: u32 = 7;
 /// gives up on this connection. The link died, the client didn't leave:
 /// the host treats it like a timeout (it may be back soon).
 pub const CLOSE_LINK_LOST: u32 = 8;
+/// The Mac doesn't let Auroval record its screen yet. Someone at the Mac
+/// has to turn it on (Auroval's setup window there opens and says how); the
+/// client may keep trying meanwhile.
+pub const CLOSE_NO_PERMISSION: u32 = 9;
 
 /// Upper bound for one message body, so a corrupt length can't make us
 /// allocate gigabytes. A 4K keyframe is well under this.

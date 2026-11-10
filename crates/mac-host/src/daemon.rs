@@ -20,7 +20,7 @@ use std::time::Duration;
 use anyhow::{Context, anyhow, bail};
 use auroval_proto::trust::Identity;
 use auroval_proto::{AudioPacket, Codec, HostControl, SessionKind, VideoFrame};
-use auroval_proto::{CLOSE_LINK_LOST, CLOSE_NO_AGENT};
+use auroval_proto::{CLOSE_LINK_LOST, CLOSE_NO_AGENT, CLOSE_NO_PERMISSION};
 use auroval_proto::{discovery, quic};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
@@ -549,6 +549,13 @@ async fn client(
             match rx.recv().await {
                 Some(FromAgent::Started { width, height }) => return Ok((width, height)),
                 Some(FromAgent::Failed(e)) => bail!("agent: {e}"),
+                Some(FromAgent::NoPermission) => {
+                    conn.close(
+                        CLOSE_NO_PERMISSION.into(),
+                        b"no Screen Recording permission",
+                    );
+                    bail!("no Screen Recording permission on the Mac: its setup window is open");
+                }
                 Some(_) => continue,
                 None => bail!("agent went away"),
             }
@@ -677,6 +684,12 @@ async fn follow_console(mut f: Following) {
             msg = f.rx.recv() => {
                 let item = match msg {
                     Some(FromAgent::Frame(frame)) => Ok(frame),
+                    Some(FromAgent::NoPermission) => {
+                        let e = "no Screen Recording permission".to_string();
+                        println!("  agent {} failed: {e}; waiting for the next session", f.in_use.0.id);
+                        failed = Some(e);
+                        continue;
+                    }
                     Some(FromAgent::Failed(e)) => {
                         println!("  agent {} failed: {e}; waiting for the next session", f.in_use.0.id);
                         failed = Some(e);

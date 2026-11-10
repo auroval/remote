@@ -11,10 +11,10 @@ use anyhow::{Context, anyhow, bail};
 use auroval_proto::quic::{self, HostTrust};
 use auroval_proto::trust::{Identity, Role, start_pake};
 use auroval_proto::{
-    AudioPacket, CLOSE_CODEC, CLOSE_LINK_LOST, CLOSE_NO_AGENT, CLOSE_NOT_PAIRED,
-    CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN, CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl,
-    DEFAULT_PORT, Hello, HostControl, InputEvent, Intent, PROTOCOL_VERSION, PairMsg, SessionKind,
-    VideoFrame, Welcome,
+    AudioPacket, CLOSE_CODEC, CLOSE_LINK_LOST, CLOSE_NO_AGENT, CLOSE_NO_PERMISSION,
+    CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN, CLOSE_VERSION, CLOSE_WRONG_CODE,
+    ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, Intent, PROTOCOL_VERSION, PairMsg,
+    SessionKind, VideoFrame, Welcome,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -587,6 +587,11 @@ fn close_code(conn: &quinn::Connection) -> Option<u32> {
     }
 }
 
+/// The Mac said it may not record its screen yet. Said to someone who may
+/// not be at the Mac, so: what has to happen there, and that we keep trying.
+const NO_PERMISSION: &str = "the Mac doesn't allow Auroval to see its screen yet. On the Mac, \
+     the \"Set up Auroval\" window shows how to turn it on; this connects as soon as it's on";
+
 /// Why the host closed the connection during the handshake, in words.
 fn refusal(conn: &quinn::Connection, address: &str) -> Failure {
     let Some(reason) = conn.close_reason() else {
@@ -612,6 +617,7 @@ fn refusal(conn: &quinn::Connection, address: &str) -> Failure {
             "wrong code. After 3 wrong codes the Mac closes pairing; then start it again there",
         ),
         Some(CLOSE_SHUTDOWN) => Failure::transient("the Mac host is shutting down"),
+        Some(CLOSE_NO_PERMISSION) => Failure::transient(NO_PERMISSION),
         Some(CLOSE_CODEC) => Failure::permanent(format!(
             "the Mac sends no video format this client decodes (we decode {}); update one of them",
             crate::decoder::codecs()
@@ -972,6 +978,7 @@ impl Live {
                     "the Mac host is shutting down (restart, shutdown or uninstall)",
                 ),
                 Some(CLOSE_NO_AGENT) => Failure::transient("the Mac has no agent running"),
+                Some(CLOSE_NO_PERMISSION) => Failure::transient(NO_PERMISSION),
                 Some(0) => Failure::permanent("the host ended the session"),
                 _ => Failure::transient(format!("connection closed: {reason}")),
             },

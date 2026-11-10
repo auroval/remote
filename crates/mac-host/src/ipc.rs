@@ -15,7 +15,7 @@ pub const SOCKET: &str = "/var/run/auroval/agent.sock";
 
 /// Daemon and agent are one binary, installed together; a different build
 /// on the other end means a half-finished install.
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc10");
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc11");
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ToAgent {
@@ -79,6 +79,9 @@ pub enum FromAgent {
     Control(HostControl),
     /// Capture couldn't start or stopped; the session is over.
     Failed(String),
+    /// Capture couldn't start: macOS doesn't allow Auroval to record the
+    /// screen yet. The agent has asked the menu to show its setup window.
+    NoPermission,
 }
 
 pub async fn write<T: Serialize>(w: &mut (impl AsyncWrite + Unpin), msg: &T) -> anyhow::Result<()> {

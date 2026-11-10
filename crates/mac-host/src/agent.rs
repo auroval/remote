@@ -240,6 +240,11 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
     });
 
     let mut active: Option<Active> = None;
+    // Whether a client saw or controlled this session since the last lock.
+    // Capture that never started (no Screen Recording yet, typically on the
+    // first connection) leaves nothing to lock: locking then would only
+    // lock out whoever is at the Mac turning the permission on.
+    let mut exposed = false;
     let login_window = unsafe { libc::getuid() } == 0;
     let result = loop {
         let msg = tokio::select! {
@@ -293,10 +298,17 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                             .as_deref()
                             .is_some_and(|e| e.contains("(code 1003)"));
                         active = Some(a);
+                        exposed = true;
                         if login_window && broken && claim_sound_retry() {
                             println!("sound failed in the login window: capture likely black");
                             break Ok(Ended::Restart);
                         }
+                    }
+                    Err(e) if !login_window && no_permission(&format!("{e:#}")) => {
+                        eprintln!("can't capture: {e:#}");
+                        println!("no Screen Recording permission: opening the setup window");
+                        crate::setup::request();
+                        let _ = out.send(FromAgent::NoPermission);
                     }
                     Err(e) => {
                         eprintln!("can't capture: {e:#}");
@@ -327,7 +339,11 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                 if let Some(a) = active.take() {
                     a.stop();
                 }
-                println!("locked the screen ({})", crate::lock::lock_screen());
+                if std::mem::take(&mut exposed) {
+                    println!("locked the screen ({})", crate::lock::lock_screen());
+                } else {
+                    println!("not locking: nothing was captured");
+                }
             }
             ToAgent::Clipboard(text) => {
                 if let Some(p) = active.as_ref().and_then(|a| a.pasteboard.as_ref()) {
@@ -372,10 +388,14 @@ fn start(
     client: &str,
 ) -> anyhow::Result<Active> {
     // Checked again here: the permission may have changed since we started.
+    let user_session = unsafe { libc::getuid() } != 0;
     if !CGPreflightPostEventAccess() {
         println!("warning: no Accessibility permission now; input won't work");
+        if user_session {
+            // The picture still goes out; someone at the Mac can fix input.
+            crate::setup::request();
+        }
     }
-    let user_session = unsafe { libc::getuid() } != 0;
     // Before the capture starts, so it can leave the indicator out. Not at
     // the login window: nobody is logged in to see it, and the agent there
     // runs as root outside a user's session.
@@ -569,6 +589,13 @@ fn may_retry(last: Option<std::time::SystemTime>, now: std::time::SystemTime) ->
     }
 }
 
+/// Whether a capture error is macOS refusing Screen Recording (TCC), as
+/// ScreenCaptureKit words it: "The user declined TCCs for application,
+/// window, display capture" (code -3801).
+fn no_permission(error: &str) -> bool {
+    error.contains("-3801") || error.contains("declined TCC")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,5 +609,14 @@ mod tests {
         assert!(may_retry(Some(now - SOUND_RETRY_WINDOW), now));
         // A mark from the future (clock changed): don't risk a loop.
         assert!(!may_retry(Some(now + Duration::from_secs(5)), now));
+    }
+
+    #[test]
+    fn tcc_refusal_is_a_missing_permission() {
+        assert!(no_permission(
+            "listing displays: The user declined TCCs for application, window, display \
+             capture (code -3801) (waited 5 s)"
+        ));
+        assert!(!no_permission("Start stream failed (code 1003)"));
     }
 }

@@ -34,7 +34,7 @@ mod legacy {
     pub const IDENTITY: &str = "AetherDesk Dev";
 }
 
-const LABEL: &str = "nl.stormlantern.auroval";
+pub const LABEL: &str = "nl.stormlantern.auroval";
 /// The host's data: identity, pairings ([`crate::trust::SYSTEM_DIR`]).
 const DEST: &str = "/Library/Application Support/Auroval";
 /// Where the binary was installed before the app bundle; removed on install.

@@ -13,7 +13,6 @@
 use std::ffi::CStr;
 use std::process::Command;
 
-use dispatch2::DispatchQueue;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
@@ -21,18 +20,10 @@ use objc2_app_kit::{
     NSAlert, NSApplication, NSApplicationActivationPolicy, NSImage, NSMenu, NSMenuDelegate,
     NSMenuItem, NSStatusBar, NSVariableStatusItemLength,
 };
-use objc2_core_graphics::{
-    CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess, CGRequestPostEventAccess,
-    CGRequestScreenCaptureAccess,
-};
+use objc2_core_graphics::{CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess};
 use objc2_foundation::{NSBundle, NSObject, NSString, ns_string};
 
 use crate::install;
-
-const SCREEN_SETTINGS: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
-const ACCESSIBILITY_SETTINGS: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
 /// The menu items that change, refreshed every time the menu opens.
 struct Items {
@@ -51,16 +42,6 @@ define_class!(
     struct Actions;
 
     impl Actions {
-        #[unsafe(method(openScreenRecording:))]
-        fn open_screen_recording(&self, _sender: Option<&AnyObject>) {
-            open(SCREEN_SETTINGS);
-        }
-
-        #[unsafe(method(openAccessibility:))]
-        fn open_accessibility(&self, _sender: Option<&AnyObject>) {
-            open(ACCESSIBILITY_SETTINGS);
-        }
-
         #[unsafe(method(showPairing:))]
         fn show_pairing(&self, _sender: Option<&AnyObject>) {
             alert(
@@ -116,7 +97,7 @@ impl Actions {
             NSString::from_str(&if ok {
                 format!("{what}: granted")
             } else {
-                format!("{what}: not granted — open Settings…")
+                format!("{what}: off — set up…")
             })
         };
         items.screen.setTitle(&permission(
@@ -129,7 +110,7 @@ impl Actions {
     }
 }
 
-fn open(url: &str) {
+pub fn open(url: &str) {
     if let Err(e) = Command::new("/usr/bin/open").arg(url).status() {
         eprintln!("open {url}: {e}");
     }
@@ -232,41 +213,6 @@ fn single_instance() -> Result<bool, String> {
     Ok(true)
 }
 
-/// Asks macOS for the two permissions the agent needs. The first time, this
-/// puts Auroval in both lists under Privacy & Security (with the system's
-/// own prompt), so granting is a switch to turn on rather than + and a path.
-/// Later calls change nothing. The agent is the same app, so what's granted
-/// here is granted to it.
-///
-/// One prompt at a time: both at once can open only one settings pane.
-/// Accessibility first, since granting it needs no restart; Screen
-/// Recording once that's on, since its prompt ends with "Quit & Reopen".
-fn request_permissions() {
-    let screen = !CGPreflightScreenCaptureAccess();
-    if CGPreflightPostEventAccess() {
-        if screen {
-            CGRequestScreenCaptureAccess();
-        }
-        return;
-    }
-    CGRequestPostEventAccess();
-    if !screen {
-        return;
-    }
-    std::thread::spawn(|| {
-        // Up to ten minutes; after that the menu still links to the pane.
-        for _ in 0..300 {
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            if CGPreflightPostEventAccess() {
-                DispatchQueue::main().exec_async(|| {
-                    CGRequestScreenCaptureAccess();
-                });
-                return;
-            }
-        }
-    });
-}
-
 /// `auroval-agent menu`, or Auroval.app opened without arguments.
 pub fn run(_args: &[String]) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
@@ -278,7 +224,12 @@ pub fn run(_args: &[String]) -> Result<(), String> {
     // No Dock icon (the Info.plist says so too: LSUIElement).
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
-    request_permissions();
+    // The window instead of macOS's own prompts: those come once per app,
+    // ever, and are easily missed.
+    let setup = crate::setup::Setup::new(mtm);
+    if crate::setup::needed() {
+        setup.show();
+    }
     let updater = start_updater();
     match &updater {
         Ok(_) => println!("updater started"),
@@ -298,11 +249,12 @@ pub fn run(_args: &[String]) -> Result<(), String> {
     let actions_items = (items.screen.clone(), items.accessibility.clone());
     let actions = Actions::new(mtm, items);
     let target: &AnyObject = &actions;
-    unsafe {
-        actions_items.0.setAction(Some(sel!(openScreenRecording:)));
-        actions_items.0.setTarget(Some(target));
-        actions_items.1.setAction(Some(sel!(openAccessibility:)));
-        actions_items.1.setTarget(Some(target));
+    let setup_target: &AnyObject = &setup;
+    for item in [&actions_items.0, &actions_items.1] {
+        unsafe {
+            item.setAction(Some(sel!(showSetup:)));
+            item.setTarget(Some(setup_target));
+        }
     }
     menu.addItem(&actions_items.0);
     menu.addItem(&actions_items.1);
@@ -348,6 +300,6 @@ pub fn run(_args: &[String]) -> Result<(), String> {
 
     app.run();
     // terminate: exits before this; keep everything alive until then.
-    drop((status, actions, updater));
+    drop((status, actions, setup, updater));
     Ok(())
 }
