@@ -173,6 +173,16 @@ define_class!(
             let app = NSApplication::sharedApplication(self.mtm());
             app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
             bring_forward(&app);
+            // Sparkle opens its window just after this; once more then.
+            let none: Option<&AnyObject> = None;
+            let _: () = unsafe {
+                msg_send![self, performSelector: sel!(bringForward), withObject: none, afterDelay: 0.3f64]
+            };
+        }
+
+        #[unsafe(method(bringForward))]
+        fn bring_forward_later(&self) {
+            bring_forward(&NSApplication::sharedApplication(self.mtm()));
         }
 
         #[unsafe(method(standardUserDriverWillShowModalAlert))]
@@ -198,9 +208,16 @@ define_class!(
     unsafe impl NSObjectProtocol for UpdateWindows {}
 );
 
+/// A menu-bar app's request to come forward is often ignored, so its
+/// visible windows are put on top regardless.
 fn bring_forward(app: &NSApplication) {
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
+    for window in app.windows() {
+        if window.isVisible() {
+            window.orderFrontRegardless();
+        }
+    }
 }
 
 /// Why updates are off, or Sparkle's updater controller, started (it checks
