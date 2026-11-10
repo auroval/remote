@@ -19,5 +19,8 @@ uid=$(stat -f %u /dev/console)
 if [ "$uid" != 0 ]; then
 	stop "gui/$uid/$label.agent"
 	stop "gui/$uid/$label.menu"
+	# A menu started outside its job (opening the app, or macOS's "Quit &
+	# Reopen") survives bootout.
+	pkill -U "$uid" -f '^/Applications/Auroval\.app/Contents/MacOS/auroval-agent( menu)?$'
 fi
 exit 0
