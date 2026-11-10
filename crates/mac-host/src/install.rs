@@ -129,12 +129,37 @@ fn unload(job: &str) {
     eprintln!("warning: {job} is still loaded after 10 s");
 }
 
+/// Stops a menu that launchd didn't start: opening the app, or macOS's
+/// "Quit & Reopen" after the Screen Recording prompt, runs it outside its
+/// job, so `bootout` misses it. Left running, it keeps the old binary and
+/// makes the new menu exit ("the menu runs already").
+fn stop_stray_menu(uid: u32) {
+    let uid = uid.to_string();
+    // `.` is the only regex character in the path.
+    let pattern = format!("^{}( menu)?$", bundle::BIN.replace('.', "\\."));
+    let args = ["-U", uid.as_str(), "-f", pattern.as_str()];
+    if run("pkill", &args).is_err() {
+        return; // none running
+    }
+    // It holds the single-instance lock until it's gone.
+    for _ in 0..25 {
+        if run("pgrep", &args).is_err() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    eprintln!("warning: an Auroval menu is still running after 5 s");
+}
+
 /// (Re)starts the user-session jobs in `uid`'s GUI session.
 fn start_user_jobs(uid: u32) -> Result<(), String> {
     let domain = format!("gui/{uid}");
-    let [agent, _, menu] = agent_plists();
-    for (job, plist) in USER_JOBS.iter().zip([agent, menu]) {
+    for job in USER_JOBS {
         unload(&format!("{domain}/{LABEL}.{job}"));
+    }
+    stop_stray_menu(uid);
+    let [agent, _, menu] = agent_plists();
+    for plist in [agent, menu] {
         run(
             "launchctl",
             &["bootstrap", &domain, &plist.to_string_lossy()],
@@ -577,6 +602,7 @@ pub fn uninstall(args: &[String]) -> Result<(), String> {
     for job in USER_JOBS {
         unload(&format!("gui/{}/{LABEL}.{job}", uid()));
     }
+    stop_stray_menu(uid());
     println!("Uninstalling needs admin rights; macOS asks for your password.");
     let me = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     let status = Command::new("sudo")
@@ -601,6 +627,7 @@ pub fn uninstall_root(_args: &[String]) -> Result<(), String> {
         for job in USER_JOBS {
             unload(&format!("gui/{user}/{LABEL}.{job}"));
         }
+        stop_stray_menu(user);
     }
     for p in std::iter::once(daemon_plist()).chain(agent_plists()) {
         let _ = std::fs::remove_file(p);
