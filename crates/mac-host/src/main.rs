@@ -24,6 +24,8 @@ mod capture;
 #[cfg(target_os = "macos")]
 mod cursor;
 #[cfg(target_os = "macos")]
+mod curtain;
+#[cfg(target_os = "macos")]
 mod daemon;
 #[cfg(target_os = "macos")]
 mod dump;

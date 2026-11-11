@@ -9,8 +9,15 @@
 //! The agent starts it per session ([`Indicator::start`]) and the capture
 //! leaves out its windows ([`crate::capture::exclude_process`]). The helper
 //! exits when its stdin closes, so it can't outlive the agent.
+//!
+//! With the curtain on (#144, [`crate::curtain`]) the same helper also
+//! covers every display and holds back the Mac's own input; the border and
+//! badge stay on top of it. Then stdin closing means the session ended: the
+//! helper locks the screen and waits until it's locked before the cover
+//! comes down. Only `release` on stdin, sent when nothing was ever shown to
+//! a client, takes it down without locking.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,24 +38,36 @@ use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NS
 const BORDER_FOR: Duration = Duration::from_secs(4);
 /// Border width in points.
 const BORDER: f64 = 6.0;
-/// Above normal windows, full-screen apps and the Dock.
-const LEVEL: isize = 1000;
+/// The curtain: above normal windows, full-screen apps, the menu bar and
+/// the Dock.
+const CURTAIN_LEVEL: isize = 1000;
+/// The border and badge, above the curtain.
+const LEVEL: isize = CURTAIN_LEVEL + 1;
+/// How long the helper waits for the screen to lock before taking the
+/// curtain down anyway.
+const LOCK_WAIT: Duration = Duration::from_secs(10);
 /// How long the agent waits for the helper's windows before capturing
 /// without them.
 const READY_WAIT: Duration = Duration::from_secs(3);
 
 /// The running helper; dropping it takes the indicator down.
 pub struct Indicator {
-    child: Child,
+    /// Taken when dropped.
+    child: Option<Child>,
 }
 
 impl Indicator {
-    /// Starts the helper for `client` and waits until its windows are up,
-    /// so the capture that starts next can leave them out.
-    pub fn start(client: &str) -> Result<Self, String> {
+    /// Starts the helper for `client`, with the curtain if `curtain`, and
+    /// waits until its windows are up, so the capture that starts next can
+    /// leave them out.
+    pub fn start(client: &str, curtain: bool) -> Result<Self, String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
+        let mut args = vec!["_indicator", client];
+        if curtain {
+            args.push("--curtain");
+        }
         let mut child = Command::new(exe)
-            .args(["_indicator", client])
+            .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -60,10 +79,11 @@ impl Indicator {
             let _ = BufReader::new(stdout).read_line(&mut line);
             let _ = tx.send(line);
         });
-        let indicator = Self { child };
+        let pid = child.id() as i32;
+        let indicator = Self { child: Some(child) };
         match rx.recv_timeout(READY_WAIT) {
             Ok(line) if line.trim() == "ready" => {
-                crate::capture::exclude_process(indicator.child.id() as i32);
+                crate::capture::exclude_process(pid);
                 Ok(indicator)
             }
             Ok(line) => Err(format!("it said {:?} instead of ready", line.trim())),
@@ -72,37 +92,66 @@ impl Indicator {
     }
 }
 
-impl Drop for Indicator {
-    fn drop(&mut self) {
-        crate::capture::include_process(self.child.id() as i32);
-        // Closing stdin ends it; kill in case it hangs.
-        drop(self.child.stdin.take());
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while Instant::now() < deadline {
-            if let Ok(Some(_)) = self.child.try_wait() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
+impl Indicator {
+    /// Takes it down without locking: nothing reached a client.
+    pub fn release(mut self) {
+        if let Some(stdin) = self.child.as_mut().and_then(|c| c.stdin.as_mut()) {
+            let _ = stdin.write_all(b"release\n");
+            let _ = stdin.flush();
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
-/// `auroval-agent _indicator <client name>`: shows the border and badge until
-/// stdin closes.
+impl Drop for Indicator {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        crate::capture::include_process(child.id() as i32);
+        // Closing stdin ends it (with the curtain: after locking). Waited
+        // for on a thread of its own, so the agent goes on; killed only if
+        // it hangs well past locking.
+        drop(child.stdin.take());
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + LOCK_WAIT + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if let Ok(Some(_)) = child.try_wait() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            eprintln!("indicator: still running, killing it");
+            let _ = child.kill();
+            let _ = child.wait();
+        });
+    }
+}
+
+/// `auroval-agent _indicator <client name> [--curtain]`: shows the border
+/// and badge (and the curtain) until stdin closes.
 pub fn run(args: &[String]) -> Result<(), String> {
     let name = args
         .first()
-        .ok_or("usage: auroval-agent _indicator <client name>")?;
+        .ok_or("usage: auroval-agent _indicator <client name> [--curtain]")?;
+    let curtain = args.iter().skip(1).any(|a| a == "--curtain");
     let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
 
     let stop = Arc::new(AtomicBool::new(false));
+    let released = Arc::new(AtomicBool::new(false));
     {
-        let stop = stop.clone();
+        let (stop, released) = (stop.clone(), released.clone());
         std::thread::spawn(move || {
             // The agent holds the other end; EOF means it's done or gone.
-            let _ = std::io::stdin().read_to_end(&mut Vec::new());
+            for line in std::io::stdin().lines() {
+                match line {
+                    Ok(l) if l.trim() == "release" => {
+                        released.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
             stop.store(true, Ordering::Relaxed);
         });
     }
@@ -115,10 +164,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let screen = NSScreen::mainScreen(mtm).ok_or("no screen")?;
     let full = screen.frame();
     let colour = accent();
+    let mut cover = curtain.then(|| crate::curtain::Cover::new(mtm, CURTAIN_LEVEL));
     let border = border_windows(mtm, full, &colour);
     let badge = badge_window(mtm, screen.visibleFrame(), &colour, name);
     // All up before "ready", so the capture that starts next finds this
     // process on screen and leaves it out.
+    if let Some(c) = &cover {
+        c.show();
+        match crate::curtain::hold_local_input() {
+            Ok(()) => eprintln!("curtain: up, local input held back"),
+            Err(e) => eprintln!("curtain: up, but local input isn't held back: {e}"),
+        }
+    }
     for w in border.iter().chain([&badge]) {
         w.orderFrontRegardless();
     }
@@ -139,6 +196,28 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 w.orderOut(None);
             }
             border_up = false;
+        }
+        if let Some(c) = &mut cover {
+            c.follow_screens(mtm, CURTAIN_LEVEL);
+        }
+    }
+    if cover.is_some() && !released.load(Ordering::Relaxed) {
+        // The session ended (or the agent is gone): lock, and keep the
+        // curtain until the lock screen is up.
+        eprintln!("curtain: locking ({})", crate::lock::lock_screen());
+        let deadline = Instant::now() + LOCK_WAIT;
+        while !crate::curtain::screen_locked() && Instant::now() < deadline {
+            pump(&app, 0.1);
+        }
+        if crate::curtain::screen_locked() {
+            // Give the lock screen a moment to cover the displays.
+            pump(&app, 0.5);
+            eprintln!("curtain: locked, coming down");
+        } else {
+            eprintln!(
+                "curtain: not locked after {} s, coming down anyway",
+                LOCK_WAIT.as_secs()
+            );
         }
     }
     Ok(())
@@ -166,7 +245,7 @@ fn accent() -> Retained<NSColor> {
 }
 
 /// A borderless, click-through window above everything, on every Space.
-fn overlay_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<NSWindow> {
+pub(crate) fn overlay_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<NSWindow> {
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
@@ -257,7 +336,7 @@ fn badge_window(
     window
 }
 
-fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
+pub(crate) fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(w, h))
 }
 
