@@ -7,7 +7,7 @@ This file holds what both directions share. Each direction has its own PRD:
 | Direction | PRD | State |
 |---|---|---|
 | **macOS host → Linux client** | [PRD-mac-host.md](PRD-mac-host.md) | Built: M0–M3 done, released as `0.1.0-alpha` (Homebrew casks). |
-| **Linux (Hyprland) host → macOS client** | [PRD-linux-host.md](PRD-linux-host.md) | Proposed. Nothing built yet. |
+| **Linux (Hyprland) host → macOS and Linux clients** | [PRD-linux-host.md](PRD-linux-host.md) | Proposed: a login screen and a session of its own, RDP-style. Spikes under way, no host built. |
 
 They were one document until October 2026. The first direction got built, and the decisions it forced (no WebRTC, no AV1, no own authentication) changed enough that the old combined text no longer described either direction well.
 
@@ -20,7 +20,7 @@ They were one document until October 2026. The first direction got built, and th
 
 ## 2. Principles (both directions)
 
-1. **The host's own lock screen is the authentication.** We stream the lock screen and forward keystrokes; the host's OS checks the password. We don't implement PAM, OpenDirectory or account switching ourselves. *(Decided in [MVP-PLAN](MVP-PLAN.md); it held up in M2.)*
+1. **The host's OS checks the password.** We show the host's own lock or login screen and forward keystrokes; the OS decides. On the Mac that's the lock screen and the login window, and we never touch OpenDirectory. On Linux the remote login screen hands the password to PAM, and PAM decides; our code never stores or checks a password. *(Decided in [MVP-PLAN](MVP-PLAN.md) for the Mac; widened in November 2026 for the Linux host's own login screen.)*
 2. **Only paired machines get in.** A one-time 6-digit code (SPAKE2, bound to both TLS certificates), then mutual TLS with pinned certificates. No accounts, no relay server.
 3. **Leave the host locked.** When a client leaves, for whatever reason, the host locks.
 4. **The keyboard is transparent while grabbed.** Every shortcut goes to the remote side, except one host key that hands control back.
