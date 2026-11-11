@@ -7,9 +7,7 @@
 
 use std::ffi::c_void;
 
-use objc2_core_graphics::{
-    CGEvent, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation,
-};
+use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventTapLocation};
 
 const LOGIN_FRAMEWORK: &std::ffi::CStr =
     c"/System/Library/PrivateFrameworks/login.framework/Versions/Current/login";
@@ -41,7 +39,8 @@ fn sac_lock() -> Option<unsafe extern "C" fn() -> i32> {
 }
 
 fn shortcut() {
-    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState);
+    // Marked, so a curtain's event tap lets it through.
+    let source = crate::inject::marked_source();
     let flags = CGEventFlags::MaskControl.0 | CGEventFlags::MaskCommand.0;
     for down in [true, false] {
         if let Some(event) = CGEvent::new_keyboard_event(source.as_deref(), KEY_Q, down) {
