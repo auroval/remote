@@ -165,6 +165,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let full = screen.frame();
     let colour = accent();
     let mut cover = curtain.then(|| crate::curtain::Cover::new(mtm, CURTAIN_LEVEL));
+    let mut blackout = curtain.then(crate::curtain::Blackout::start);
     let border = border_windows(mtm, full, &colour);
     let badge = badge_window(mtm, screen.visibleFrame(), &colour, name);
     // All up before "ready", so the capture that starts next finds this
@@ -200,6 +201,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         if let Some(c) = &mut cover {
             c.follow_screens(mtm, CURTAIN_LEVEL);
         }
+        if let Some(b) = &mut blackout {
+            b.enforce();
+        }
     }
     if cover.is_some() && !released.load(Ordering::Relaxed) {
         // The session ended (or the agent is gone): lock, and keep the
@@ -208,6 +212,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         let deadline = Instant::now() + LOCK_WAIT;
         while !crate::curtain::screen_locked() && Instant::now() < deadline {
             pump(&app, 0.1);
+            if let Some(b) = &mut blackout {
+                b.enforce();
+            }
         }
         if crate::curtain::screen_locked() {
             // Give the lock screen a moment to cover the displays.
@@ -220,6 +227,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
             );
         }
     }
+    // The displays' own colours back, then the cover down (when this
+    // returns).
+    drop(blackout);
     Ok(())
 }
 
