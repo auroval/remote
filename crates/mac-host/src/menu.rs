@@ -14,7 +14,7 @@ use std::ffi::CStr;
 use std::process::Command;
 
 use objc2::rc::{Allocated, Retained};
-use objc2::runtime::{AnyClass, AnyObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyClass, AnyObject, Bool, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAlert, NSApplication, NSApplicationActivationPolicy, NSControlStateValueOff,
@@ -148,9 +148,84 @@ fn item(
     item
 }
 
+/// Sparkle's controller and the delegate it holds weakly (kept alive here).
+struct Updater {
+    controller: Retained<AnyObject>,
+    _driver: Retained<UpdateWindows>,
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements, and UpdateWindows
+    // has no ivars and no Drop.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "AurovalUpdateWindows"]
+    struct UpdateWindows;
+
+    // SPUStandardUserDriverDelegate. Sparkle asks with respondsToSelector:,
+    // so the protocol itself (from a framework loaded at run time) isn't
+    // declared.
+    impl UpdateWindows {
+        // A menu-bar app isn't brought to the front, so Sparkle's windows
+        // ("Install and Relaunch") opened behind whatever was in use, and
+        // the update seemed to hang. While Sparkle shows an update, the app
+        // gets a Dock icon and comes forward, as Sparkle advises for apps
+        // without one.
+        #[unsafe(method(standardUserDriverWillHandleShowingUpdate:forUpdate:state:))]
+        fn will_show_update(&self, _handle: Bool, _update: *mut AnyObject, _state: *mut AnyObject) {
+            let app = NSApplication::sharedApplication(self.mtm());
+            app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+            bring_forward(&app);
+            // Sparkle opens its window just after this; once more then.
+            let none: Option<&AnyObject> = None;
+            let _: () = unsafe {
+                msg_send![self, performSelector: sel!(bringForward), withObject: none, afterDelay: 0.3f64]
+            };
+        }
+
+        #[unsafe(method(bringForward))]
+        fn bring_forward_later(&self) {
+            bring_forward(&NSApplication::sharedApplication(self.mtm()));
+        }
+
+        #[unsafe(method(standardUserDriverWillShowModalAlert))]
+        fn will_show_alert(&self) {
+            bring_forward(&NSApplication::sharedApplication(self.mtm()));
+        }
+
+        #[unsafe(method(standardUserDriverWillFinishUpdateSession))]
+        fn will_finish(&self) {
+            NSApplication::sharedApplication(self.mtm())
+                .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        }
+
+        // Scheduled checks may show their window without Sparkle warning
+        // that a background app should remind gently: the handler above
+        // brings it to the front.
+        #[unsafe(method(supportsGentleScheduledUpdateReminders))]
+        fn gentle(&self) -> Bool {
+            Bool::YES
+        }
+    }
+
+    unsafe impl NSObjectProtocol for UpdateWindows {}
+);
+
+/// A menu-bar app's request to come forward is often ignored, so its
+/// visible windows are put on top regardless.
+fn bring_forward(app: &NSApplication) {
+    #[allow(deprecated)]
+    app.activateIgnoringOtherApps(true);
+    for window in app.windows() {
+        if window.isVisible() {
+            window.orderFrontRegardless();
+        }
+    }
+}
+
 /// Why updates are off, or Sparkle's updater controller, started (it checks
 /// daily by itself, as the Info.plist says).
-fn start_updater() -> Result<Retained<AnyObject>, &'static str> {
+fn start_updater(mtm: MainThreadMarker) -> Result<Updater, &'static str> {
     let source = std::fs::read_to_string(install::SOURCE_FILE).unwrap_or_default();
     if source.trim() == "homebrew" {
         return Err("Updates: by Homebrew (brew upgrade)");
@@ -174,14 +249,20 @@ fn start_updater() -> Result<Retained<AnyObject>, &'static str> {
     const CONTROLLER: &CStr = c"SPUStandardUpdaterController";
     let class = AnyClass::get(CONTROLLER).ok_or("Updates: off (Sparkle is incomplete)")?;
     let none: Option<&AnyObject> = None;
+    let driver: Retained<UpdateWindows> =
+        unsafe { msg_send![super(UpdateWindows::alloc(mtm).set_ivars(())), init] };
+    let driver_obj: &AnyObject = &driver;
     // SAFETY: -[SPUStandardUpdaterController
     // initWithStartingUpdater:updaterDelegate:userDriverDelegate:] takes a
     // BOOL and two optional delegates, and returns the controller.
     let controller: Retained<AnyObject> = unsafe {
         let this: Allocated<AnyObject> = msg_send![class, alloc];
-        msg_send![this, initWithStartingUpdater: true, updaterDelegate: none, userDriverDelegate: none]
+        msg_send![this, initWithStartingUpdater: true, updaterDelegate: none, userDriverDelegate: Some(driver_obj)]
     };
-    Ok(controller)
+    Ok(Updater {
+        controller,
+        _driver: driver,
+    })
 }
 
 /// Holds a per-user lock while it runs, so a second copy (launchd's at
@@ -233,7 +314,7 @@ pub fn run(_args: &[String]) -> Result<(), String> {
     if crate::setup::needed() {
         setup.show();
     }
-    let updater = start_updater();
+    let updater = start_updater(mtm);
     match &updater {
         Ok(_) => println!("updater started"),
         Err(why) => println!("{why}"),
@@ -277,11 +358,11 @@ pub fn run(_args: &[String]) -> Result<(), String> {
     menu.addItem(&curtain);
     menu.addItem(&NSMenuItem::separatorItem(mtm));
     match &updater {
-        Ok(controller) => menu.addItem(&item(
+        Ok(updater) => menu.addItem(&item(
             mtm,
             "Check for Updates…",
             Some(sel!(checkForUpdates:)),
-            Some(controller),
+            Some(&updater.controller),
         )),
         Err(why) => menu.addItem(&item(mtm, why, None, None)),
     }
