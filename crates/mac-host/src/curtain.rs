@@ -5,19 +5,28 @@
 //! [`crate::indicator`]). When the session ends the screen is locked
 //! before the cover comes down.
 //!
+//! The displays are also turned black through their gamma tables
+//! ([`Blackout`]), as RustDesk does: the cover windows alone let the content
+//! through for a moment while the window server animates a Space change
+//! (entering or leaving full screen, cmd+tab). Gamma is applied on the way
+//! to the panel, after the capture, so the client still sees the picture.
+//! The cover stays as a second layer for the moments macOS resets the
+//! gamma (after a display change); the blackout puts it back.
+//!
 //! Local input is held back by a session event tap that drops every event
 //! not posted by our injector, which marks its events
 //! ([`crate::inject::MARK`]).
 //!
-//! Known gaps: the pointer at the Mac still moves on screen (the window
-//! server moves it before any session tap sees the event; clicks and keys
-//! are dropped), trackpad gestures the Dock handles itself (Mission
-//! Control swipes) aren't stopped, and macOS's own lock screen draws above
-//! the cover.
+//! Known gaps: the pointer at the Mac still moves (the window server moves
+//! it before any session tap sees the event; clicks and keys are dropped),
+//! trackpad gestures the Dock handles itself (Mission Control swipes)
+//! aren't stopped, and with the displays black, nothing at the Mac says
+//! why: the cover's text and the badge are black too.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
 use objc2::{AnyThread, MainThreadMarker, MainThreadOnly};
@@ -132,6 +141,139 @@ fn cover_window(mtm: MainThreadMarker, frame: NSRect, level: isize) -> Retained<
     window
 }
 
+/// The displays' gamma tables set to zero, so every display shows black.
+/// Dropping it, or the process ending in any way, gives the displays their
+/// own colours back (macOS restores ColorSync's tables when the process
+/// that changed them exits).
+pub struct Blackout {
+    checked: Instant,
+}
+
+/// How often [`Blackout::enforce`] looks whether macOS reset a table.
+const RECHECK: Duration = Duration::from_millis(200);
+
+impl Blackout {
+    pub fn start() -> Self {
+        for d in online_displays() {
+            if let Err(e) = black(d) {
+                eprintln!("curtain: display {d} not blacked out: {e}");
+            }
+        }
+        Self {
+            checked: Instant::now(),
+        }
+    }
+
+    /// Blacks out displays that came online since, or whose table macOS
+    /// put back (it does after display changes). Cheap enough to call every
+    /// turn of the run loop; does the work every [`RECHECK`].
+    pub fn enforce(&mut self) {
+        if self.checked.elapsed() < RECHECK {
+            return;
+        }
+        self.checked = Instant::now();
+        for d in online_displays() {
+            if !is_black(d) {
+                eprintln!("curtain: display {d} lit again, blacking it out");
+                if let Err(e) = black(d) {
+                    eprintln!("curtain: display {d} not blacked out: {e}");
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Blackout {
+    fn drop(&mut self) {
+        unsafe { CGDisplayRestoreColorSyncSettings() };
+    }
+}
+
+type DisplayId = u32;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGGetOnlineDisplayList(max: u32, displays: *mut DisplayId, count: *mut u32) -> i32;
+    fn CGDisplayGammaTableCapacity(display: DisplayId) -> u32;
+    fn CGSetDisplayTransferByTable(
+        display: DisplayId,
+        size: u32,
+        red: *const f32,
+        green: *const f32,
+        blue: *const f32,
+    ) -> i32;
+    fn CGGetDisplayTransferByTable(
+        display: DisplayId,
+        capacity: u32,
+        red: *mut f32,
+        green: *mut f32,
+        blue: *mut f32,
+        count: *mut u32,
+    ) -> i32;
+    fn CGDisplayRestoreColorSyncSettings();
+}
+
+fn online_displays() -> Vec<DisplayId> {
+    let mut ids = [0; 16];
+    let mut count = 0;
+    let err = unsafe { CGGetOnlineDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) };
+    if err != 0 {
+        eprintln!("curtain: no display list (error {err})");
+        return Vec::new();
+    }
+    ids[..count as usize].to_vec()
+}
+
+fn black(display: DisplayId) -> Result<(), String> {
+    let size = unsafe { CGDisplayGammaTableCapacity(display) };
+    if size == 0 {
+        return Err("no gamma table".into());
+    }
+    let zeros = vec![0.0f32; size as usize];
+    let err = unsafe {
+        CGSetDisplayTransferByTable(
+            display,
+            size,
+            zeros.as_ptr(),
+            zeros.as_ptr(),
+            zeros.as_ptr(),
+        )
+    };
+    if err == 0 {
+        Ok(())
+    } else {
+        Err(format!("error {err}"))
+    }
+}
+
+fn is_black(display: DisplayId) -> bool {
+    let capacity = unsafe { CGDisplayGammaTableCapacity(display) };
+    if capacity == 0 {
+        // Nothing to set; don't retry every turn.
+        return true;
+    }
+    let n = capacity as usize;
+    let (mut r, mut g, mut b) = (vec![0.0f32; n], vec![0.0f32; n], vec![0.0f32; n]);
+    let mut count = 0;
+    let err = unsafe {
+        CGGetDisplayTransferByTable(
+            display,
+            capacity,
+            r.as_mut_ptr(),
+            g.as_mut_ptr(),
+            b.as_mut_ptr(),
+            &mut count,
+        )
+    };
+    err == 0 && all_dark(&[&r, &g, &b], count as usize)
+}
+
+fn all_dark(tables: &[&Vec<f32>], count: usize) -> bool {
+    tables
+        .iter()
+        .all(|t| t.iter().take(count).all(|v| *v < 0.001))
+}
+
 thread_local! {
     /// The tap, so the callback can switch it back on after a timeout.
     static TAP: RefCell<Option<CFRetained<CFMachPort>>> = const { RefCell::new(None) };
@@ -210,5 +352,15 @@ mod tests {
         assert_ne!(m & (1 << 10), 0); // key down
         assert_ne!(m & (1 << 1), 0); // left mouse down
         assert_eq!(m & (1 << 0), 0); // null event
+    }
+
+    #[test]
+    fn dark_only_when_every_entry_is_zero() {
+        let zero = vec![0.0; 4];
+        let ramp = vec![0.0, 0.3, 0.6, 1.0];
+        assert!(all_dark(&[&zero, &zero, &zero], 4));
+        assert!(!all_dark(&[&zero, &ramp, &zero], 4));
+        // Entries past the count don't matter.
+        assert!(all_dark(&[&zero, &ramp, &zero], 1));
     }
 }
