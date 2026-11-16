@@ -164,20 +164,36 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let screen = NSScreen::mainScreen(mtm).ok_or("no screen")?;
     let full = screen.frame();
     let colour = accent();
-    let mut cover = curtain.then(|| crate::curtain::Cover::new(mtm, CURTAIN_LEVEL));
+    let (mut blackout, all_black) = match curtain.then(crate::curtain::Blackout::start) {
+        Some((b, all)) => (Some(b), all),
+        None => (None, false),
+    };
+    // The cover windows only where the gamma didn't do it (see
+    // crate::curtain).
+    let mut cover = (curtain && !all_black).then(|| {
+        eprintln!("curtain: not every display went black, covering with windows");
+        crate::curtain::Cover::new(mtm, CURTAIN_LEVEL)
+    });
     let border = border_windows(mtm, full, &colour);
     let badge = badge_window(mtm, screen.visibleFrame(), &colour, name);
     // All up before "ready", so the capture that starts next finds this
     // process on screen and leaves it out.
     if let Some(c) = &cover {
         c.show();
+    }
+    if curtain {
         match crate::curtain::hold_local_input() {
             Ok(()) => eprintln!("curtain: up, local input held back"),
             Err(e) => eprintln!("curtain: up, but local input isn't held back: {e}"),
         }
     }
-    for w in border.iter().chain([&badge]) {
-        w.orderFrontRegardless();
+    // With every display black nobody at the Mac sees the border and
+    // badge; they'd only turn up in screenshots taken during the session.
+    let signs = !curtain || !all_black;
+    if signs {
+        for w in border.iter().chain([&badge]) {
+            w.orderFrontRegardless();
+        }
     }
 
     let started = Instant::now();
@@ -191,7 +207,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             let _ = std::io::stdout().flush();
             ready = true;
         }
-        if border_up && started.elapsed() > BORDER_FOR {
+        if signs && border_up && started.elapsed() > BORDER_FOR {
             for w in &border {
                 w.orderOut(None);
             }
@@ -200,14 +216,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
         if let Some(c) = &mut cover {
             c.follow_screens(mtm, CURTAIN_LEVEL);
         }
+        if let Some(b) = &mut blackout {
+            b.enforce();
+        }
     }
-    if cover.is_some() && !released.load(Ordering::Relaxed) {
+    if curtain && !released.load(Ordering::Relaxed) {
         // The session ended (or the agent is gone): lock, and keep the
         // curtain until the lock screen is up.
         eprintln!("curtain: locking ({})", crate::lock::lock_screen());
         let deadline = Instant::now() + LOCK_WAIT;
         while !crate::curtain::screen_locked() && Instant::now() < deadline {
             pump(&app, 0.1);
+            if let Some(b) = &mut blackout {
+                b.enforce();
+            }
         }
         if crate::curtain::screen_locked() {
             // Give the lock screen a moment to cover the displays.
@@ -220,6 +242,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
             );
         }
     }
+    // The displays' own colours back, then the cover down (when this
+    // returns).
+    drop(blackout);
     Ok(())
 }
 
