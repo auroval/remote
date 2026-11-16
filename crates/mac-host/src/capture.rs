@@ -19,8 +19,8 @@ use objc2_core_video::{
 };
 use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol};
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCDisplay, SCRunningApplication, SCShareableContent, SCStream,
-    SCStreamConfiguration, SCStreamDelegate, SCStreamOutput, SCStreamOutputType, SCWindow,
+    SCContentFilter, SCDisplay, SCShareableContent, SCStream, SCStreamConfiguration,
+    SCStreamDelegate, SCStreamOutput, SCStreamOutputType, SCWindow,
 };
 
 use crate::dump::Dump;
@@ -200,37 +200,32 @@ impl StreamOutput {
     }
 }
 
-/// The whole display, minus the processes in [`EXCLUDED`]. Leaving out an
-/// application covers the windows it opens later too.
+/// The whole display, minus the windows of the processes in [`EXCLUDED`].
+/// Leaving out windows, not the application: ScreenCaptureKit treats every
+/// process of Auroval.app as one application, so leaving out the helper's
+/// application also left out the menu-bar item's menu (#144). Windows the
+/// helper opens after this aren't left out; it opens them all before it
+/// says it's ready.
 fn filter(display: &Display) -> Result<Retained<SCContentFilter>, String> {
     let excluded = EXCLUDED.lock().unwrap().clone();
-    if excluded.is_empty() {
-        return Ok(unsafe {
-            SCContentFilter::initWithDisplay_excludingWindows(
-                SCContentFilter::alloc(),
-                &display.display,
-                &NSArray::<SCWindow>::new(),
-            )
-        });
-    }
-    let content = shareable_content()?;
-    let apps: Vec<Retained<SCRunningApplication>> = unsafe { content.applications() }
-        .iter()
-        .filter(|a| excluded.contains(&unsafe { a.processID() }))
-        .collect();
-    if apps.len() < excluded.len() {
-        println!(
-            "capture: {} of {} processes to leave out not found",
-            excluded.len() - apps.len(),
-            excluded.len()
-        );
-    }
+    let windows: Vec<Retained<SCWindow>> = if excluded.is_empty() {
+        Vec::new()
+    } else {
+        let content = shareable_content()?;
+        let windows: Vec<_> = unsafe { content.windows() }
+            .iter()
+            .filter(|w| {
+                unsafe { w.owningApplication() }
+                    .is_some_and(|a| excluded.contains(&unsafe { a.processID() }))
+            })
+            .collect();
+        windows
+    };
     Ok(unsafe {
-        SCContentFilter::initWithDisplay_excludingApplications_exceptingWindows(
+        SCContentFilter::initWithDisplay_excludingWindows(
             SCContentFilter::alloc(),
             &display.display,
-            &NSArray::from_retained_slice(&apps),
-            &NSArray::<SCWindow>::new(),
+            &NSArray::from_retained_slice(&windows),
         )
     })
 }

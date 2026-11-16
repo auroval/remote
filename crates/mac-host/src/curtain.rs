@@ -10,8 +10,10 @@
 //! through for a moment while the window server animates a Space change
 //! (entering or leaving full screen, cmd+tab). Gamma is applied on the way
 //! to the panel, after the capture, so the client still sees the picture.
-//! The cover stays as a second layer for the moments macOS resets the
-//! gamma (after a display change); the blackout puts it back.
+//! The cover windows only go up when a display can't be blacked out: they
+//! end up in screenshots taken during the session (the gamma doesn't), and
+//! after a display change macOS may light a display again for up to
+//! [`RECHECK`] before the blackout puts it back.
 //!
 //! Local input is held back by a session event tap that drops every event
 //! not posted by our injector, which marks its events
@@ -153,15 +155,20 @@ pub struct Blackout {
 const RECHECK: Duration = Duration::from_millis(200);
 
 impl Blackout {
-    pub fn start() -> Self {
-        for d in online_displays() {
+    /// Also says whether every display went black.
+    pub fn start() -> (Self, bool) {
+        let displays = online_displays();
+        let mut all = !displays.is_empty();
+        for d in displays {
             if let Err(e) = black(d) {
                 eprintln!("curtain: display {d} not blacked out: {e}");
+                all = false;
             }
         }
-        Self {
+        let blackout = Self {
             checked: Instant::now(),
-        }
+        };
+        (blackout, all)
     }
 
     /// Blacks out displays that came online since, or whose table macOS
