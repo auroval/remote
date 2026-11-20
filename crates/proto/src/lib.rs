@@ -1,4 +1,4 @@
-//! Wire protocol between the AetherDesk client and host.
+//! Wire protocol between the Auroval client and host.
 //!
 //! A connection is one QUIC connection with three streams:
 //!
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 pub const PROTOCOL_VERSION: u16 = 12;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
-pub const ALPN: &[u8] = b"aetherdesk/1";
+pub const ALPN: &[u8] = b"auroval/1";
 
 /// UDP port the host listens on by default.
 pub const DEFAULT_PORT: u16 = 4500;
@@ -48,6 +48,10 @@ pub const CLOSE_CODEC: u32 = 7;
 /// gives up on this connection. The link died, the client didn't leave:
 /// the host treats it like a timeout (it may be back soon).
 pub const CLOSE_LINK_LOST: u32 = 8;
+/// The Mac doesn't let Auroval record its screen yet. Someone at the Mac
+/// has to turn it on (Auroval's setup window there opens and says how); the
+/// client may keep trying meanwhile.
+pub const CLOSE_NO_PERMISSION: u32 = 9;
 
 /// Upper bound for one message body, so a corrupt length can't make us
 /// allocate gigabytes. A 4K keyframe is well under this.
@@ -448,7 +452,7 @@ pub mod quic {
     pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
     /// Server name the client asks for; the host's certificate is made out to it.
-    pub const SERVER_NAME: &str = "aetherdesk";
+    pub const SERVER_NAME: &str = "auroval";
 
     fn provider() -> Arc<CryptoProvider> {
         Arc::new(rustls::crypto::ring::default_provider())
@@ -479,10 +483,10 @@ pub mod quic {
         Arc::new(t)
     }
 
-    /// `AETHERDESK_QUIC_CC=cubic|newreno|bbr[:INITIAL_WINDOW_BYTES]`: an
+    /// `AUROVAL_QUIC_CC=cubic|newreno|bbr[:INITIAL_WINDOW_BYTES]`: an
     /// experiment for #109, on the side that sends (the host, for video).
     /// Unset: quinn's default (Cubic, its own initial window).
-    pub const CC_ENV: &str = "AETHERDESK_QUIC_CC";
+    pub const CC_ENV: &str = "AUROVAL_QUIC_CC";
 
     fn congestion_from_env()
     -> Option<Arc<dyn quinn::congestion::ControllerFactory + Send + Sync + 'static>> {

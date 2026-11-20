@@ -4,7 +4,7 @@
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
-use aetherdesk_proto::{InputEvent, MouseButton};
+use auroval_proto::{InputEvent, MouseButton};
 use objc2_core_foundation::{CFRetained, CGPoint};
 use objc2_core_graphics::{
     CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation,
@@ -13,6 +13,17 @@ use objc2_core_graphics::{
 
 use crate::input::{Action, InputState, Point, Rect};
 
+/// Set on every event we post, so the curtain's event tap
+/// ([`crate::curtain`]) can tell them from the Mac's own keyboard and mouse.
+pub const MARK: i64 = 0x4155_524F; // "AURO"
+
+/// An event source whose events carry [`MARK`].
+pub fn marked_source() -> Option<CFRetained<CGEventSource>> {
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState);
+    CGEventSource::set_user_data(source.as_deref(), MARK);
+    source
+}
+
 struct Injector {
     source: Option<CFRetained<CGEventSource>>,
 }
@@ -20,7 +31,7 @@ struct Injector {
 impl Injector {
     fn new() -> Self {
         Self {
-            source: CGEventSource::new(CGEventSourceStateID::HIDSystemState),
+            source: marked_source(),
         }
     }
 
@@ -37,9 +48,18 @@ impl Injector {
             Action::Key {
                 keycode,
                 down,
+                repeat,
                 flags,
             } => {
-                self.post(CGEvent::new_keyboard_event(source, keycode, down), flags);
+                let event = CGEvent::new_keyboard_event(source, keycode, down);
+                if let (Some(event), true) = (&event, repeat) {
+                    CGEvent::set_integer_value_field(
+                        Some(event),
+                        CGEventField::KeyboardEventAutorepeat,
+                        1,
+                    );
+                }
+                self.post(event, flags);
             }
             Action::Move {
                 at,

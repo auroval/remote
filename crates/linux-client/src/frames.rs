@@ -23,13 +23,13 @@
 //! are on its own clock, so no clock sync is needed for gaps.
 //!
 //! [`Pacer`] picks the picture to show; see [`Present`] for the modes
-//! (`AETHERDESK_PRESENT`).
+//! (`AUROVAL_PRESENT`).
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use aetherdesk_proto::HostTiming;
+use auroval_proto::HostTiming;
 
 use crate::latency::{Timing, stages};
 
@@ -436,7 +436,7 @@ pub enum Present {
 }
 
 /// The environment variable that picks [`Present`].
-pub const PRESENT_ENV: &str = "AETHERDESK_PRESENT";
+pub const PRESENT_ENV: &str = "AUROVAL_PRESENT";
 
 impl Present {
     pub fn from_env() -> Self {

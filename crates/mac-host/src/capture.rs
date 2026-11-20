@@ -19,8 +19,8 @@ use objc2_core_video::{
 };
 use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol};
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCDisplay, SCRunningApplication, SCShareableContent, SCStream,
-    SCStreamConfiguration, SCStreamDelegate, SCStreamOutput, SCStreamOutputType, SCWindow,
+    SCContentFilter, SCDisplay, SCShareableContent, SCStream, SCStreamConfiguration,
+    SCStreamDelegate, SCStreamOutput, SCStreamOutputType, SCWindow,
 };
 
 use crate::dump::Dump;
@@ -111,16 +111,16 @@ pub fn main_display() -> Result<Display, String> {
 struct OutputIvars {
     encoder: Encoder,
     errors: EncoderOutput,
-    /// Our own downscale (`AETHERDESK_CAPTURE_SCALE`), and whether it failed.
+    /// Our own downscale (`AUROVAL_CAPTURE_SCALE`), and whether it failed.
     scaler: Option<(Scaler, AtomicBool)>,
-    /// `AETHERDESK_DUMP_FRAME`.
+    /// `AUROVAL_DUMP_FRAME`.
     dump: Option<Dump>,
 }
 
 define_class!(
     // SAFETY: NSObject has no subclassing requirements; StreamOutput has no Drop.
     #[unsafe(super(NSObject))]
-    #[name = "AetherDeskStreamOutput"]
+    #[name = "AurovalStreamOutput"]
     #[ivars = OutputIvars]
     struct StreamOutput;
 
@@ -200,37 +200,32 @@ impl StreamOutput {
     }
 }
 
-/// The whole display, minus the processes in [`EXCLUDED`]. Leaving out an
-/// application covers the windows it opens later too.
+/// The whole display, minus the windows of the processes in [`EXCLUDED`].
+/// Leaving out windows, not the application: ScreenCaptureKit treats every
+/// process of Auroval.app as one application, so leaving out the helper's
+/// application also left out the menu-bar item's menu (#144). Windows the
+/// helper opens after this aren't left out; it opens them all before it
+/// says it's ready.
 fn filter(display: &Display) -> Result<Retained<SCContentFilter>, String> {
     let excluded = EXCLUDED.lock().unwrap().clone();
-    if excluded.is_empty() {
-        return Ok(unsafe {
-            SCContentFilter::initWithDisplay_excludingWindows(
-                SCContentFilter::alloc(),
-                &display.display,
-                &NSArray::<SCWindow>::new(),
-            )
-        });
-    }
-    let content = shareable_content()?;
-    let apps: Vec<Retained<SCRunningApplication>> = unsafe { content.applications() }
-        .iter()
-        .filter(|a| excluded.contains(&unsafe { a.processID() }))
-        .collect();
-    if apps.len() < excluded.len() {
-        println!(
-            "capture: {} of {} processes to leave out not found",
-            excluded.len() - apps.len(),
-            excluded.len()
-        );
-    }
+    let windows: Vec<Retained<SCWindow>> = if excluded.is_empty() {
+        Vec::new()
+    } else {
+        let content = shareable_content()?;
+        let windows: Vec<_> = unsafe { content.windows() }
+            .iter()
+            .filter(|w| {
+                unsafe { w.owningApplication() }
+                    .is_some_and(|a| excluded.contains(&unsafe { a.processID() }))
+            })
+            .collect();
+        windows
+    };
     Ok(unsafe {
-        SCContentFilter::initWithDisplay_excludingApplications_exceptingWindows(
+        SCContentFilter::initWithDisplay_excludingWindows(
             SCContentFilter::alloc(),
             &display.display,
-            &NSArray::from_retained_slice(&apps),
-            &NSArray::<SCWindow>::new(),
+            &NSArray::from_retained_slice(&windows),
         )
     })
 }
@@ -284,7 +279,7 @@ impl Capture {
                 Some(ProtocolObject::from_ref(&*handler)),
             )
         };
-        let queue = DispatchQueue::new("nl.stormlantern.aetherdesk.capture", None);
+        let queue = DispatchQueue::new("nl.stormlantern.auroval.capture", None);
         unsafe {
             stream.addStreamOutput_type_sampleHandlerQueue_error(
                 ProtocolObject::from_ref(&*handler),
@@ -314,7 +309,7 @@ impl Capture {
 }
 
 /// What to capture at for a `size` picture, and our scaler when that's
-/// bigger (`AETHERDESK_CAPTURE_SCALE`, #113).
+/// bigger (`AUROVAL_CAPTURE_SCALE`, #113).
 fn scaled_capture(
     display: &Display,
     size: (usize, usize),
@@ -340,7 +335,7 @@ fn scaled_capture(
 
 /// Set to a number of microseconds, the shortest time between two captures,
 /// overriding [`default_interval_us`]; 0 captures every refresh.
-pub const INTERVAL_ENV: &str = "AETHERDESK_CAPTURE_INTERVAL_US";
+pub const INTERVAL_ENV: &str = "AUROVAL_CAPTURE_INTERVAL_US";
 
 /// The shortest time between two captures at `fps`: 90 % of a frame, not a
 /// whole one. The built-in display refreshes at 120 Hz, and with exactly 1/60 s

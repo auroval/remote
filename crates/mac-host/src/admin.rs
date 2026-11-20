@@ -1,24 +1,23 @@
-//! `aether-agent pair`, `clients` and `unpair`: managing who may connect.
+//! `auroval-agent pair`, `clients` and `unpair`: managing who may connect.
 //! They work on the same files the daemon reads (see [`crate::trust`]), so
 //! they need no running daemon and no channel to it.
 
-use std::collections::HashSet;
 use std::time::Duration;
 
-use aetherdesk_proto::DEFAULT_PORT;
+use auroval_proto::DEFAULT_PORT;
 
 use crate::session;
 use crate::trust::{PAIRING_TIME, PAIRING_TRIES, Store};
 
 pub const USAGE: &str = "\
-usage: aether-agent pair [--serve] [--port N]
-       aether-agent clients [--serve]
-       aether-agent unpair NAME [--serve]
+usage: auroval-agent pair [--serve] [--port N]
+       auroval-agent clients [--serve]
+       auroval-agent unpair NAME [--serve]
 
   pair     open pairing for 2 minutes and show the code to type on the client
   clients  list the paired clients
   unpair   forget a client, by name or the start of its fingerprint
-  --serve  the clients of `aether-agent serve`, instead of the installed host
+  --serve  the clients of `auroval-agent serve`, instead of the installed host
            (which needs root: sudo, or scripts/mac.zsh pair|clients|unpair)
   --port N the port to show in the hint (default 4500)";
 
@@ -76,7 +75,7 @@ pub fn pair(args: &[String]) -> Result<(), String> {
     let id = store
         .identity()
         .map_err(|e| format!("identity in {}: {e}", store.dir().display()))?;
-    let before: HashSet<_> = clients(&store)?.iter().map(|c| c.fingerprint).collect();
+    let before = store.clients_changed();
     let pairing = store.open_pairing().map_err(|e| e.to_string())?;
 
     let port = if o.port == DEFAULT_PORT {
@@ -89,7 +88,7 @@ pub fn pair(args: &[String]) -> Result<(), String> {
         PAIRING_TIME.as_secs() / 60
     );
     for (interface, ip) in session::local_addresses() {
-        println!("  aetherdesk pair {ip}{port}    ({interface})");
+        println!("  auroval pair {ip}{port}    ({interface})");
     }
     println!(
         "and type this code:\n\n    {} {}\n",
@@ -112,9 +111,12 @@ pub fn pair(args: &[String]) -> Result<(), String> {
                     return Err("cancelled; pairing is closed".into());
                 }
             }
-            let now = clients(&store)?;
-            if let Some(c) = now.iter().find(|c| !before.contains(&c.fingerprint)) {
-                println!("Paired with {} ({}).", c.name, c.fingerprint.short());
+            // Rewritten when a client pairs, also one paired before (it's
+            // last then); comparing fingerprints missed that one.
+            if store.clients_changed() != before {
+                if let Some(c) = clients(&store)?.last() {
+                    println!("Paired with {} ({}).", c.name, c.fingerprint.short());
+                }
                 return Ok(());
             }
             if store.pairing().is_none() {
@@ -150,7 +152,7 @@ pub fn unpair(args: &[String]) -> Result<(), String> {
     let gone = store.remove_clients(&which).map_err(|e| e.to_string())?;
     if gone.is_empty() {
         return Err(format!(
-            "no paired client called {which:?}; `aether-agent clients` lists them"
+            "no paired client called {which:?}; `auroval-agent clients` lists them"
         ));
     }
     for c in gone {
