@@ -24,7 +24,7 @@ ffmpeg-next = { version = "9", default-features = false, features = ["codec", "f
 quinn.workspace = true
 rustls.workspace = true
 png = { version = "0.18", optional = true }
-sdl3 = "0.20"
+sdl3 = "0.22"
 tokio.workspace = true
 ab_glyph = "0.2"
 mdns-sd = { version = "0.21", default-features = false }
