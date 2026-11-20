@@ -50,9 +50,9 @@ cask "auroval-host" do
     password; run it again after every brew upgrade, since the installed
     copy is what runs):
       auroval-agent install
-    Then, once, turn Auroval on under Screen Recording and Accessibility
-    in System Settings → Privacy & Security, then restart the agent:
-      auroval-agent restart
+    Then, once, turn Auroval on under Accessibility and Screen Recording
+    when macOS asks (the Auroval menu-bar item asks, one at a time). No
+    restart needed.
     Releases are signed with a Developer ID and notarized, so these stay
     granted across updates.
 
