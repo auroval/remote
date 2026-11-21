@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/icon/auroval.svg" width="128" height="128" alt="Auroval icon">
+  <img src="assets/icon/auroval.svg" width="128" height="128" alt="Auroval Remote icon">
 </p>
 
-<h1 align="center">Auroval</h1>
+<h1 align="center">Auroval Remote</h1>
 
 <p align="center">
   A modern, secure, high-performance remote desktop for <b>Wayland (Hyprland)</b> and <b>macOS</b>.
@@ -19,6 +19,8 @@
 > **Status:** alpha. Use a Mac from Linux: a macOS host (Apple Silicon) streams its screen to a Linux client (Wayland, tested on Hyprland). See [Install](#install-alpha) to try it; the plan is in [docs/MVP-PLAN.md](docs/MVP-PLAN.md).
 
 > **Formerly AetherDesk.** Up to 0.1.0-alpha.6 this project was called AetherDesk. Host and client have to be updated together: the old and new versions don't talk to each other. `auroval-agent install` takes over an AetherDesk install on the Mac, pairings included, and the client picks up `~/.config/aetherdesk` by itself (the Flatpak can't see it: pair again, or `mv ~/.config/aetherdesk ~/.config/auroval` first). Grant Screen Recording and Accessibility once more, to the new path below.
+
+> **The full name is Auroval Remote.** There is a sibling project, [**Auroval Shell**](https://github.com/auroval/auroval) — one coherent look for Hyprland, from the login screen outward — and this one used the bare word "Auroval" for itself, so the two collided. The qualifier went on both names rather than on one; both are introduced at [auroval.org](https://auroval.org). Nothing installed changes: the app is still **Auroval.app**, the Flatpak is still `nl.stormlantern.Auroval`, the commands are still `auroval` and `auroval-agent`, and the audio device is still **Auroval**. Only the prose grew a word, so there is nothing to update and nothing to re-grant.
 
 ## Goals
 
