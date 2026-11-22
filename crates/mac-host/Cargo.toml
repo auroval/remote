@@ -47,6 +47,8 @@ objc2-video-toolbox = "0.3"
 [dev-dependencies]
 # A paused clock, so tests of 35 s waits take no time.
 tokio = { workspace = true, features = ["test-util"] }
+# Random keys for the RFB tests, which run on Linux too.
+getrandom.workspace = true
 
 [lints]
 workspace = true
