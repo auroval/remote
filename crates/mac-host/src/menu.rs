@@ -17,8 +17,9 @@ use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject, Bool, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAlert, NSApplication, NSApplicationActivationPolicy, NSImage, NSMenu, NSMenuDelegate,
-    NSMenuItem, NSStatusBar, NSVariableStatusItemLength,
+    NSAlert, NSApplication, NSApplicationActivationPolicy, NSControlStateValueOff,
+    NSControlStateValueOn, NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar,
+    NSVariableStatusItemLength,
 };
 use objc2_core_graphics::CGPreflightScreenCaptureAccess;
 use objc2_foundation::{NSBundle, NSObject, NSString, ns_string};
@@ -30,6 +31,7 @@ struct Items {
     host: Retained<NSMenuItem>,
     screen: Retained<NSMenuItem>,
     accessibility: Retained<NSMenuItem>,
+    curtain: Retained<NSMenuItem>,
 }
 
 define_class!(
@@ -42,14 +44,10 @@ define_class!(
     struct Actions;
 
     impl Actions {
-        #[unsafe(method(showPairing:))]
-        fn show_pairing(&self, _sender: Option<&AnyObject>) {
-            alert(
-                self.mtm(),
-                "Pair a client",
-                "In Terminal, run:\n\n    sudo auroval-agent pair\n\nIt shows a 6-digit code for \
-                 2 minutes. On Linux, run auroval pair and type the code.",
-            );
+        #[unsafe(method(toggleCurtain:))]
+        fn toggle_curtain(&self, _sender: Option<&AnyObject>) {
+            crate::curtain::set_enabled(!crate::curtain::enabled());
+            self.refresh();
         }
 
         #[unsafe(method(showUninstall:))]
@@ -107,6 +105,11 @@ impl Actions {
         items
             .accessibility
             .setTitle(&permission(crate::setup::input_allowed(), "Accessibility"));
+        items.curtain.setState(if crate::curtain::enabled() {
+            NSControlStateValueOn
+        } else {
+            NSControlStateValueOff
+        });
     }
 }
 
@@ -321,6 +324,7 @@ pub fn run(_args: &[String]) -> Result<(), String> {
         host: item(mtm, "Host: …", None, None),
         screen: item(mtm, "Screen Recording: …", None, None),
         accessibility: item(mtm, "Accessibility: …", None, None),
+        curtain: item(mtm, "Hide This Screen While Connected", None, None),
     };
     let menu = NSMenu::new(mtm);
     let version = format!("Auroval {}", env!("CARGO_PKG_VERSION"));
@@ -328,6 +332,7 @@ pub fn run(_args: &[String]) -> Result<(), String> {
     menu.addItem(&items.host);
     menu.addItem(&NSMenuItem::separatorItem(mtm));
     let actions_items = (items.screen.clone(), items.accessibility.clone());
+    let curtain = items.curtain.clone();
     let actions = Actions::new(mtm, items);
     let target: &AnyObject = &actions;
     let setup_target: &AnyObject = &setup;
@@ -339,12 +344,18 @@ pub fn run(_args: &[String]) -> Result<(), String> {
     }
     menu.addItem(&actions_items.0);
     menu.addItem(&actions_items.1);
+    let pair = crate::pairwindow::PairWindow::new(mtm);
     menu.addItem(&item(
         mtm,
         "Pair a Client…",
         Some(sel!(showPairing:)),
-        Some(target),
+        Some(&pair),
     ));
+    unsafe {
+        curtain.setAction(Some(sel!(toggleCurtain:)));
+        curtain.setTarget(Some(target));
+    }
+    menu.addItem(&curtain);
     menu.addItem(&NSMenuItem::separatorItem(mtm));
     match &updater {
         Ok(updater) => menu.addItem(&item(
@@ -381,6 +392,6 @@ pub fn run(_args: &[String]) -> Result<(), String> {
 
     app.run();
     // terminate: exits before this; keep everything alive until then.
-    drop((status, actions, setup, updater));
+    drop((status, actions, setup, pair, updater));
     Ok(())
 }

@@ -24,6 +24,8 @@ mod capture;
 #[cfg(target_os = "macos")]
 mod cursor;
 #[cfg(target_os = "macos")]
+mod curtain;
+#[cfg(target_os = "macos")]
 mod daemon;
 #[cfg(target_os = "macos")]
 mod dump;
@@ -49,6 +51,10 @@ mod menu;
 mod mute;
 #[cfg(target_os = "macos")]
 mod output;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod pairing;
+#[cfg(target_os = "macos")]
+mod pairwindow;
 #[cfg(target_os = "macos")]
 mod pasteboard;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -100,6 +106,7 @@ fn main() {
         Some("_postinstall") => install::postinstall(&args[1..]),
         Some("_info-plist") => info_plist(&args[1..]),
         Some("_indicator") => indicator::run(&args[1..]),
+        Some("_pair-for") => pairing::run_for(&args[1..]),
         Some("_input-allowed") => std::process::exit(if setup::input_allowed() { 0 } else { 1 }),
         Some("version") | Some("--version") => {
             println!(

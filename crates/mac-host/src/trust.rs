@@ -103,6 +103,14 @@ impl Store {
         write_private(&self.dir.join("clients"), text.as_bytes())
     }
 
+    /// When the client list last changed: pairing rewrites it, also for a
+    /// client that was paired before (its entry moves to the end).
+    pub fn clients_changed(&self) -> Option<std::time::SystemTime> {
+        std::fs::metadata(self.dir.join("clients"))
+            .and_then(|m| m.modified())
+            .ok()
+    }
+
     /// Adds a client, replacing an earlier entry with the same certificate.
     pub fn add_client(&self, fingerprint: Fingerprint, name: &str) -> std::io::Result<()> {
         let mut clients = self.clients()?;
@@ -213,6 +221,19 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("auroval-store-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         Store::new(dir)
+    }
+
+    #[test]
+    fn pairing_a_known_client_again_counts_as_a_change() {
+        let s = store("changed");
+        assert_eq!(s.clients_changed(), None);
+        s.add_client(Fingerprint([1; 32]), "desk").unwrap();
+        let first = s.clients_changed();
+        assert!(first.is_some());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        s.add_client(Fingerprint([1; 32]), "desk").unwrap(); // re-paired
+        assert_ne!(s.clients_changed(), first);
+        std::fs::remove_dir_all(s.dir()).unwrap();
     }
 
     #[test]

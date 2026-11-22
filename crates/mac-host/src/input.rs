@@ -54,6 +54,10 @@ pub enum Action {
     Key {
         keycode: u16,
         down: bool,
+        /// A press of a key that's already down: the client's auto-repeat.
+        /// Marked as such for macOS, or apps see a fresh press each time
+        /// (Miro restarted its Space-to-pan, cutting the drag short).
+        repeat: bool,
         flags: u64,
     },
     /// Pointer motion; a drag while `dragging` holds a button.
@@ -156,6 +160,7 @@ impl InputState {
         let Some(keycode) = keymap::keycode(hid) else {
             return vec![];
         };
+        let repeat = down && self.keys.contains(&hid);
         if down {
             if let Some(bit) = keymap::modifier_bit(hid) {
                 self.modifiers |= 1 << bit;
@@ -175,6 +180,7 @@ impl InputState {
         vec![Action::Key {
             keycode,
             down,
+            repeat,
             flags: self.flags(),
         }]
     }
@@ -263,6 +269,7 @@ mod tests {
             vec![Action::Key {
                 keycode: 0x30,
                 down: true,
+                repeat: false,
                 flags: FLAG_COMMAND
             }]
         );
@@ -273,6 +280,7 @@ mod tests {
             vec![Action::Key {
                 keycode: 0x30,
                 down: false,
+                repeat: false,
                 flags: 0
             }]
         );
@@ -439,6 +447,7 @@ mod tests {
             Action::Key {
                 keycode: 0x00,
                 down: false,
+                repeat: false,
                 flags: FLAG_COMMAND
             }
         );
@@ -447,6 +456,7 @@ mod tests {
             Action::Key {
                 keycode: 0x37,
                 down: false,
+                repeat: false,
                 flags: 0
             }
         );
@@ -457,5 +467,20 @@ mod tests {
     fn unmapped_keys_do_nothing() {
         let mut s = InputState::new(DISPLAY);
         assert!(s.handle(key(0x66, true), Instant::now()).is_empty());
+    }
+
+    #[test]
+    fn a_held_key_repeats_as_a_repeat() {
+        let mut s = InputState::new(DISPLAY);
+        let now = Instant::now();
+        let repeat = |a: Vec<Action>| match a.as_slice() {
+            [Action::Key { repeat, .. }] => *repeat,
+            other => panic!("{other:?}"),
+        };
+        const SPACE: u16 = 0x2C;
+        assert!(!repeat(s.handle(key(SPACE, true), now)));
+        assert!(repeat(s.handle(key(SPACE, true), now)), "auto-repeat");
+        assert!(!repeat(s.handle(key(SPACE, false), now)));
+        assert!(!repeat(s.handle(key(SPACE, true), now)), "pressed again");
     }
 }
