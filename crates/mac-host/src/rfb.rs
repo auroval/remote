@@ -320,13 +320,20 @@ pub async fn with_timeout<T>(
 mod tests {
     use super::*;
 
+    /// A fresh key per run: the tests don't depend on its value.
+    fn test_key() -> [u8; 16] {
+        let mut key = [0u8; 16];
+        getrandom::fill(&mut key).expect("system RNG");
+        key
+    }
+
     /// The credential block must match the spike byte for byte: the account
     /// and secret in two NUL-terminated 64-byte fields, AES-128-ECB with the
     /// MD5-derived key. We check by decrypting and reading the fields back.
     #[test]
     fn credential_block_round_trips() {
         use aes::cipher::BlockDecrypt;
-        let key = [7u8; 16];
+        let key = test_key();
         let random = [0xABu8; 128];
         let block = credential_block(&key, "alice", "s3cret-ü", &random).unwrap();
 
@@ -349,7 +356,7 @@ mod tests {
 
     #[test]
     fn a_field_at_the_limit_is_accepted_over_it_rejected() {
-        let key = [0u8; 16];
+        let key = test_key();
         let random = [0u8; 128];
         assert!(credential_block(&key, &"a".repeat(MAX_FIELD), "x", &random).is_ok());
         assert!(matches!(
