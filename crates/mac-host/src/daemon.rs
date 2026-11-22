@@ -471,6 +471,8 @@ fn attach(
     *agent.client.lock().unwrap() = Some(tx.clone());
     *agent.sound.lock().unwrap() = sound.cloned();
     let in_use = InUse(agent.clone());
+    // One lock, copied out: two in the literal below would deadlock.
+    let shown = *view.lock().unwrap();
     agent
         .to
         .send(ToAgent::Start {
@@ -479,8 +481,8 @@ fn attach(
             in_flight: s.in_flight as u32,
             clipboard,
             codec,
-            view: view.lock().unwrap().size,
-            display: view.lock().unwrap().display,
+            view: shown.size,
+            display: shown.display,
             audio: sound.is_some(),
             client: client.into(),
             speaker: agent.speaker.is_some(),
