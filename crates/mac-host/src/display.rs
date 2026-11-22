@@ -264,7 +264,7 @@ mod mac {
 
     /// Where we note the mode to go back to: per user, like the mute marker.
     fn marker() -> PathBuf {
-        std::env::temp_dir().join("aetherdesk-display")
+        std::env::temp_dir().join("auroval-display")
     }
 
     /// The display under `match`. Puts the original mode back when dropped.

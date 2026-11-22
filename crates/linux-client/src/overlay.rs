@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
 
-use aetherdesk_proto::DisplayMode;
+use auroval_proto::DisplayMode;
 
 use crate::net::State;
 
