@@ -8,10 +8,8 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::{
-    ClipboardEcho, Credentials, InputEvent, LoginResult, MAX_CLIPBOARD, Welcome,
-};
 use anyhow::{Context, anyhow};
+use auroval_proto::{ClipboardEcho, Credentials, InputEvent, LoginResult, MAX_CLIPBOARD, Welcome};
 use sdl3::clipboard::ClipboardUtil;
 use sdl3::event::Event;
 use sdl3::keyboard::Scancode;
@@ -207,13 +205,13 @@ pub struct LinkView<'a> {
     /// Clipboard sync: our copies out, the Mac's in. `None` when off.
     pub clipboard: Option<(UnboundedSender<String>, Receiver<String>)>,
     /// The Mac's pointer shape and moves.
-    pub pointer: Receiver<aetherdesk_proto::HostControl>,
+    pub pointer: Receiver<auroval_proto::HostControl>,
     /// Our size in pixels, for the host to size the picture to.
     pub view: UnboundedSender<(u32, u32)>,
     /// The Mac's sound, when asked for.
-    pub audio: Option<Receiver<aetherdesk_proto::AudioPacket>>,
+    pub audio: Option<Receiver<auroval_proto::AudioPacket>>,
     /// Our microphone, for the Mac, when asked for and taken.
-    pub mic: Option<UnboundedSender<aetherdesk_proto::AudioPacket>>,
+    pub mic: Option<UnboundedSender<auroval_proto::AudioPacket>>,
     /// Log in at the login window (#72): the account and password out, the
     /// outcome in.
     pub login: (UnboundedSender<Credentials>, Receiver<LoginResult>),
@@ -224,7 +222,7 @@ pub struct LinkView<'a> {
 }
 
 /// Also the Flatpak ID and the name of the desktop file.
-pub const APP_ID: &str = "nl.stormlantern.AetherDesk";
+pub const APP_ID: &str = "nl.stormlantern.Auroval";
 
 pub fn run(
     welcome: &Welcome,
@@ -254,7 +252,7 @@ pub fn run(
             .ok()
     });
     let (w, h) = (welcome.width, welcome.height);
-    let title = format!("AetherDesk — {host}");
+    let title = format!("Auroval — {host}");
     let window = video
         .window(&title, (w / 2).max(320), (h / 2).max(200))
         .resizable()

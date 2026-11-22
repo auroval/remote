@@ -482,7 +482,7 @@ pub fn render_login(form: &LoginForm, s: f32, max_w: f32) -> Image {
     let (la, ld) = metrics(regular(), label_pt * s);
     let (ba, bd) = metrics(regular(), BODY * s);
     let intro = "Type your Mac account and password.";
-    let note = "AetherDesk types them at the login window over Screen Sharing.";
+    let note = "Auroval types them at the login window over Screen Sharing.";
 
     let row = HintRow {
         hints: &login_hints(form),
