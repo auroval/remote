@@ -43,6 +43,8 @@ fn ns_error(err: *mut NSError) -> String {
 
 pub struct Display {
     pub display: Retained<SCDisplay>,
+    /// Its CoreGraphics id, for [`bounds`] later.
+    pub id: u32,
     /// Size in pixels (Retina: twice the size in points).
     pub width: usize,
     pub height: usize,
@@ -89,23 +91,33 @@ pub fn main_display() -> Result<Display, String> {
     let display = unsafe { content.displays() }
         .firstObject()
         .ok_or("no displays")?;
-    let b = CGDisplayBounds(unsafe { display.displayID() });
-    let bounds = Rect {
-        x: b.origin.x,
-        y: b.origin.y,
-        width: b.size.width,
-        height: b.size.height,
-    };
+    let id = unsafe { display.displayID() };
+    let bounds = bounds(id);
     let mode = CGDisplayCopyDisplayMode(unsafe { display.displayID() })
         .ok_or("no display mode for the main display")?;
     let width = CGDisplayMode::pixel_width(Some(&mode));
     let height = CGDisplayMode::pixel_height(Some(&mode));
     Ok(Display {
         display,
+        id,
         width,
         height,
         bounds,
     })
+}
+
+/// Where display `id` is now, in global points. Asked anew wherever input
+/// is mapped: the display's mode can change during a session (match,
+/// macOS putting a mode back, someone at the Mac), and a size noted at the
+/// start would put the pointer somewhere else.
+pub fn bounds(id: u32) -> Rect {
+    let b = CGDisplayBounds(id);
+    Rect {
+        x: b.origin.x,
+        y: b.origin.y,
+        width: b.size.width,
+        height: b.size.height,
+    }
 }
 
 struct OutputIvars {

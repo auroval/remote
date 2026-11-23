@@ -64,7 +64,7 @@ impl Watcher {
     /// Sends the shape whenever it changes (each image once, then by id)
     /// and the position when the Mac moved the pointer itself.
     pub fn start(
-        display: Rect,
+        display: u32,
         last_move: LastMove,
         send: impl Fn(HostControl) + Send + 'static,
     ) -> Self {
@@ -98,7 +98,8 @@ impl Watcher {
                     };
                     if moved_by_mac && reported.is_none_or(|r| far(at, r)) {
                         reported = Some(at);
-                        let (x, y) = normalize(at, display);
+                        // The display as it is now (its mode may change).
+                        let (x, y) = normalize(at, crate::capture::bounds(display));
                         send(HostControl::CursorMoved { x, y });
                     }
                     if !moved_by_mac {
