@@ -218,7 +218,8 @@ pub fn picture_size(display: (u32, u32), view: Option<(u32, u32)>) -> (u32, u32)
     const MIN_WIDTH: f64 = 640.0;
     let scale = (vw as f64 / dw)
         .min(vh as f64 / dh)
-        .clamp(MIN_WIDTH / dw, 1.0);
+        // A display narrower than that itself: as it is.
+        .clamp((MIN_WIDTH / dw).min(1.0), 1.0);
     let even = |v: f64| ((v.round() as u32) & !1).max(2);
     (even(dw * scale), even(dh * scale))
 }
@@ -862,6 +863,10 @@ mod tests {
         assert_eq!(picture_size(mac, Some((7680, 4320))), (3456, 2234));
         // A tiny window: not below 640 wide.
         assert_eq!(picture_size(mac, Some((200, 100))).0, 640);
+        // A display narrower than the minimum stays as it is (the fake host
+        // in match makes one the size of a small window).
+        assert_eq!(picture_size((500, 900), Some((500, 900))), (500, 900));
+        assert_eq!(picture_size((500, 900), Some((250, 450))), (500, 900));
         let (w, h) = picture_size(mac, Some((1279, 801)));
         assert!(w % 2 == 0 && h % 2 == 0 && w <= 1279 && h <= 801, "{w}x{h}");
     }
