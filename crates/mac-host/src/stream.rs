@@ -13,7 +13,6 @@ use tokio::sync::mpsc::error::TrySendError;
 use crate::capture::{Capture, Display};
 use crate::encoder::{EncodedFrame, Encoder, Settings, host_time};
 use crate::inject;
-use crate::input::Rect;
 use crate::pipeline::Pipeline;
 
 /// What a client may tune. The display decides the size.
@@ -158,10 +157,10 @@ pub fn micros(seconds: f64) -> u64 {
 /// Starts an injector thread for a display with the given bounds. It runs
 /// until the returned sender is dropped, then releases held keys and buttons.
 pub fn spawn_injector(
-    bounds: Rect,
+    display: u32,
     last_move: crate::cursor::LastMove,
 ) -> mpsc::Sender<InputEvent> {
     let (tx, rx) = mpsc::channel::<InputEvent>();
-    std::thread::spawn(move || inject::run(bounds, rx, last_move));
+    std::thread::spawn(move || inject::run(display, rx, last_move));
     tx
 }

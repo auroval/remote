@@ -110,6 +110,11 @@ impl InputState {
         }
     }
 
+    /// The display moved or changed size: map from now on to `display`.
+    pub fn set_display(&mut self, display: Rect) {
+        self.display = display;
+    }
+
     pub fn flags(&self) -> u64 {
         let mut flags = 0;
         for (bit, flag) in MODIFIER_FLAGS.iter().enumerate() {
