@@ -262,6 +262,10 @@ mod mac {
         }
     }
 
+    /// How often [`Matcher::restore`] tries, and how long between tries.
+    const RESTORE_TRIES: u32 = 3;
+    const RESTORE_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
+
     /// Where we note the mode to go back to: per user, like the mute marker.
     fn marker() -> PathBuf {
         std::env::temp_dir().join("auroval-display")
@@ -322,23 +326,37 @@ mod mac {
             Ok(())
         }
 
-        /// Back to the mode the display had. True when it changed.
+        /// Back to the mode the display had. True when it changed. Tries a
+        /// few times: right after the capture lost the display (the session
+        /// ending, the screen locking) the window server refused once
+        /// (CGError 1014). If it still won't, the marker stays, so
+        /// [`recover`] tries again at the next session.
         pub fn restore(&mut self) -> bool {
             let Some(original) = self.original.take() else {
                 return false;
             };
-            let _ = std::fs::remove_file(marker());
-            match set(self.display, &original) {
-                Ok(()) => {
-                    settle(self.display, &original);
-                    println!("display: back to {original}");
-                    true
+            let mut last = String::new();
+            for attempt in 0..RESTORE_TRIES {
+                if attempt > 0 {
+                    std::thread::sleep(RESTORE_PAUSE);
                 }
-                Err(e) => {
-                    eprintln!("display: can't go back to {original}: {e}");
-                    false
+                match set(self.display, &original) {
+                    Ok(()) => {
+                        let _ = std::fs::remove_file(marker());
+                        settle(self.display, &original);
+                        println!("display: back to {original}");
+                        return true;
+                    }
+                    Err(e) => last = e,
                 }
             }
+            eprintln!(
+                "display: can't go back to {original}: {last}; trying again at the next session"
+            );
+            if let Some(now) = current(self.display) {
+                let _ = std::fs::write(marker(), encode(self.display, &original, &now));
+            }
+            false
         }
     }
 
@@ -348,9 +366,11 @@ mod mac {
         }
     }
 
-    /// Puts back the mode a previous run left changed (it crashed or was
-    /// killed mid-session), unless someone changed it since. Call at start
-    /// and on the way out.
+    /// Puts back the mode a previous run or session left changed (it
+    /// crashed, was killed, or the window server refused to switch back),
+    /// unless someone changed it since. Call at start, at each session's
+    /// start (before matching, which would take the left mode for the
+    /// original) and on the way out. If it still can't, the marker stays.
     pub fn recover() {
         let path = marker();
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -362,9 +382,13 @@ mod mac {
         };
         match current(display) {
             Some(now) if now.same(&ours) => {
-                println!("display: a previous run left {now}; back to {original}");
-                if let Err(e) = set(display, &original) {
-                    eprintln!("display: can't go back to {original}: {e}");
+                println!("display: a previous session left {now}; back to {original}");
+                match set(display, &original) {
+                    Ok(()) => settle(display, &original),
+                    Err(e) => {
+                        eprintln!("display: can't go back to {original}: {e}");
+                        let _ = std::fs::write(&path, text);
+                    }
                 }
             }
             // The window server reverted it already (or someone picked

@@ -11,7 +11,7 @@ use objc2_core_graphics::{
     CGEventType, CGMouseButton, CGScrollEventUnit,
 };
 
-use crate::input::{Action, InputState, Point, Rect};
+use crate::input::{Action, InputState, Point};
 
 /// Set on every event we post, so the curtain's event tap
 /// ([`crate::curtain`]) can tell them from the Mac's own keyboard and mouse.
@@ -141,10 +141,14 @@ fn point(p: Point) -> CGPoint {
 /// held. Run it on its own thread for the length of a session. Pointer moves
 /// are noted in `last_move`, so the cursor watcher can tell them from moves
 /// the Mac makes itself.
-pub fn run(display: Rect, events: Receiver<InputEvent>, last_move: crate::cursor::LastMove) {
+pub fn run(display: u32, events: Receiver<InputEvent>, last_move: crate::cursor::LastMove) {
     let injector = Injector::new();
-    let mut state = InputState::new(display);
+    let mut state = InputState::new(crate::capture::bounds(display));
     for event in events {
+        if matches!(event, InputEvent::MouseMove { .. }) {
+            // Where the display is now, not where it was at the start.
+            state.set_display(crate::capture::bounds(display));
+        }
         for action in state.handle(event, Instant::now()) {
             if let Action::Move { at, .. } = &action {
                 *last_move.lock().unwrap() = Some((*at, Instant::now()));

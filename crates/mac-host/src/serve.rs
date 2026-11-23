@@ -243,7 +243,7 @@ async fn client(
     let last_move = cursor::LastMove::default();
     let _pointer = local_pointer.then(|| {
         let notices = notices.clone();
-        cursor::Watcher::start(display.bounds, last_move.clone(), move |msg| {
+        cursor::Watcher::start(display.id, last_move.clone(), move |msg| {
             let _ = notices.send(msg);
         })
     });
@@ -295,7 +295,7 @@ async fn client(
         .flatten();
     // The client plays it now; two speakers would echo.
     let muted = sound.as_ref().and_then(|_| crate::mute::mute());
-    let injector = stream::spawn_injector(display.bounds, last_move);
+    let injector = stream::spawn_injector(display.id, last_move);
     let input = tokio::spawn(session::read_input(conn.clone(), move |e| {
         injector.send(e).is_ok()
     }));

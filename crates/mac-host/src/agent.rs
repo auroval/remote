@@ -330,7 +330,7 @@ impl Active {
             eprintln!("stopping capture: {e}");
         }
         self.pump = pump;
-        self.injector = stream::spawn_injector(display.bounds, self.last_move.clone());
+        self.injector = stream::spawn_injector(display.id, self.last_move.clone());
         if self._pointer.is_some() {
             self._pointer = Some(pointer_watcher(&display, &self.last_move, out));
         }
@@ -475,6 +475,10 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                         .inspect_err(|e| eprintln!("indicator: {e}"))
                         .ok();
                 }
+                // A mode the last session couldn't put back goes back
+                // first: capture, input and a new match start from the
+                // display's own mode.
+                crate::display::recover();
                 let settings = StreamSettings {
                     fps,
                     mbps,
@@ -687,7 +691,7 @@ fn start(
         sound_error,
         _muted: muted,
         _output: output,
-        injector: stream::spawn_injector(display.bounds, last_move.clone()),
+        injector: stream::spawn_injector(display.id, last_move.clone()),
         last_move,
         stream,
         pump,
@@ -712,7 +716,7 @@ fn pointer_watcher(
     out: &mpsc::UnboundedSender<FromAgent>,
 ) -> cursor::Watcher {
     let out = out.clone();
-    cursor::Watcher::start(display.bounds, last_move.clone(), move |msg| {
+    cursor::Watcher::start(display.id, last_move.clone(), move |msg| {
         let _ = out.send(FromAgent::Control(msg));
     })
 }
