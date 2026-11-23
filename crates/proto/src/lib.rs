@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 12;
+pub const PROTOCOL_VERSION: u16 = 13;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"auroval/1";
@@ -169,6 +169,40 @@ pub enum ClientControl {
     /// bigger than that ([`picture_size`]): fewer pixels to capture, encode,
     /// send and decode. Sent after [`Welcome`] and when the window changed.
     ViewSize { width: u32, height: u32 },
+    /// How the Mac's display relates to the window ([`DisplayMode`]). Sent
+    /// after [`Welcome`] and when the user switches; a session starts at
+    /// [`DisplayMode::Fit`].
+    Display(DisplayMode),
+}
+
+/// How the Mac's display relates to the client's window.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisplayMode {
+    /// The whole display, scaled to fit the window. The Mac doesn't change.
+    #[default]
+    Fit,
+    /// The Mac switches its display to the mode that best fits the window,
+    /// follows resizes, and goes back to its own mode when the session ends.
+    /// Rearranges windows and desktop icons on the Mac. Only in a user
+    /// session (also when locked); the login window stays at `Fit`.
+    Match,
+}
+
+impl DisplayMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            DisplayMode::Fit => "fit",
+            DisplayMode::Match => "match",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim() {
+            "fit" => Some(DisplayMode::Fit),
+            "match" => Some(DisplayMode::Match),
+            _ => None,
+        }
+    }
 }
 
 /// The picture size for a display shown in a window of `view` pixels: as
@@ -184,7 +218,8 @@ pub fn picture_size(display: (u32, u32), view: Option<(u32, u32)>) -> (u32, u32)
     const MIN_WIDTH: f64 = 640.0;
     let scale = (vw as f64 / dw)
         .min(vh as f64 / dh)
-        .clamp(MIN_WIDTH / dw, 1.0);
+        // A display narrower than that itself: as it is.
+        .clamp((MIN_WIDTH / dw).min(1.0), 1.0);
     let even = |v: f64| ((v.round() as u32) & !1).max(2);
     (even(dw * scale), even(dh * scale))
 }
@@ -828,8 +863,21 @@ mod tests {
         assert_eq!(picture_size(mac, Some((7680, 4320))), (3456, 2234));
         // A tiny window: not below 640 wide.
         assert_eq!(picture_size(mac, Some((200, 100))).0, 640);
+        // A display narrower than the minimum stays as it is (the fake host
+        // in match makes one the size of a small window).
+        assert_eq!(picture_size((500, 900), Some((500, 900))), (500, 900));
+        assert_eq!(picture_size((500, 900), Some((250, 450))), (500, 900));
         let (w, h) = picture_size(mac, Some((1279, 801)));
         assert!(w % 2 == 0 && h % 2 == 0 && w <= 1279 && h <= 801, "{w}x{h}");
+    }
+
+    #[test]
+    fn display_modes_have_names() {
+        for m in [DisplayMode::Fit, DisplayMode::Match] {
+            assert_eq!(DisplayMode::parse(m.name()), Some(m));
+        }
+        assert_eq!(DisplayMode::parse("stretch"), None);
+        assert_eq!(DisplayMode::default(), DisplayMode::Fit);
     }
 
     #[test]
@@ -881,6 +929,7 @@ mod tests {
             width: 2560,
             height: 1400,
         });
+        roundtrip(ClientControl::Display(DisplayMode::Match));
         roundtrip(HostControl::Clipboard(String::new()));
         roundtrip(HostControl::CursorImage(CursorImage {
             id: 7,
