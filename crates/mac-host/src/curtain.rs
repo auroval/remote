@@ -92,9 +92,32 @@ impl Cover {
         Self { windows, frames }
     }
 
+    /// Covers for a display mode change: each a display's frame grown by
+    /// its own size on every side, so it still covers the display when the
+    /// new mode makes it larger in points.
+    pub fn wide(mtm: MainThreadMarker, level: isize) -> Self {
+        let frames = screen_frames(mtm);
+        let windows = frames
+            .iter()
+            .map(|f| {
+                let (w, h) = (f.size.width, f.size.height);
+                let grown =
+                    crate::indicator::rect(f.origin.x - w, f.origin.y - h, 3.0 * w, 3.0 * h);
+                cover_window(mtm, grown, level)
+            })
+            .collect();
+        Self { windows, frames }
+    }
+
     pub fn show(&self) {
         for w in &self.windows {
             w.orderFrontRegardless();
+        }
+    }
+
+    pub fn hide(&self) {
+        for w in &self.windows {
+            w.orderOut(None);
         }
     }
 

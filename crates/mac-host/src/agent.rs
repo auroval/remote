@@ -176,6 +176,8 @@ struct Active {
     matcher: Option<crate::display::Matcher>,
     /// When to make the display follow the window (`match`, debounced).
     rematch_at: Option<tokio::time::Instant>,
+    /// Covers the displays while their mode changes, with the curtain up.
+    shield: Option<crate::indicator::Shield>,
     /// The session's sound, when the client wants it.
     sound: Option<AudioCapture>,
     /// Why sound didn't start, when it was asked for.
@@ -282,6 +284,7 @@ impl Active {
         // The display changes under the running capture: nothing may pass
         // on that it fails meanwhile.
         self.pump.abort();
+        let covered = self.shield.as_ref().is_some_and(|s| s.cover());
         match target {
             Some(mode) => {
                 if let Err(e) = matcher.switch(&mode) {
@@ -293,6 +296,9 @@ impl Active {
             }
         }
         self.recapture(out);
+        if covered && let Some(s) = &self.shield {
+            s.uncover();
+        }
     }
 
     /// The display's mode changed: capture it again, at its new size, with
@@ -352,6 +358,16 @@ impl Active {
         self.pump.abort();
         if let Err(e) = self.stream.capture.stop() {
             eprintln!("stopping capture: {e}");
+        }
+        // The display's own mode back, under covers while the curtain is up.
+        if let Some(mut m) = self.matcher
+            && m.changed()
+        {
+            let covered = self.shield.as_ref().is_some_and(|s| s.cover());
+            m.restore();
+            if covered && let Some(s) = &self.shield {
+                s.uncover();
+            }
         }
         // Dropping the injector's sender releases held keys and buttons.
     }
@@ -490,6 +506,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                             "capturing {}x{} for the daemon, {codec}",
                             a.stream.width, a.stream.height
                         );
+                        a.shield = indicator.as_ref().map(|i| i.shield());
                         if display == DisplayMode::Match {
                             a.display_mode = display;
                             a.rematch_at = Some(tokio::time::Instant::now());
@@ -706,6 +723,7 @@ fn start(
         display_mode: DisplayMode::Fit,
         matcher: None,
         rematch_at: None,
+        shield: None,
     })
 }
 
