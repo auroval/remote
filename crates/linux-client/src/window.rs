@@ -455,6 +455,9 @@ pub fn run(
             at_login,
         );
         overlay.offer_display(display_mode);
+        if connected && let Some(badge) = crate::copies::notice() {
+            overlay.badges.insert(0, badge);
+        }
         // Redraw on a new picture, or when the overlay changed; while it
         // shows something that counts, a few times a second is plenty.
         let changed = drawn.as_ref() != Some(&overlay);

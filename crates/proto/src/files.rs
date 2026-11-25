@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// The most one copy may hold. Bigger copies are refused before anything
 /// is sent.
-pub const MAX_FILES_BYTES: u64 = 500 * 1024 * 1024;
+pub const MAX_FILES_BYTES: u64 = 500_000_000;
 /// The most entries (files and folders) one copy may hold.
 pub const MAX_FILE_ENTRIES: usize = 10_000;
 /// The longest a name in a path may be, in bytes (as on APFS and ext4).

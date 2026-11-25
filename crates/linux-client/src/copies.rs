@@ -12,12 +12,15 @@
 use std::ffi::{CString, OsString};
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
 use auroval_proto::files::{FileOffer, MAX_FILES_BYTES, scan};
 use auroval_proto::quic;
 use tokio::io::AsyncReadExt;
+
+use crate::overlay::{Badge, Tone};
 
 pub const URI_LIST: &str = "text/uri-list";
 pub const PORTAL_KEY: &str = "application/vnd.portal.filetransfer";
@@ -131,14 +134,58 @@ async fn retrieve(key: &str) -> anyhow::Result<Vec<PathBuf>> {
     Ok(paths.into_iter().map(PathBuf::from).collect())
 }
 
+/// What the overlay says about the latest copy, and until when.
+static NOTICE: Mutex<Option<(Badge, Instant)>> = Mutex::new(None);
+
+fn notify(tone: Tone, body: &str, detail: String, shown: Duration) {
+    let badge = Badge {
+        tag: "FILES".into(),
+        tone,
+        body: body.into(),
+        detail,
+        hints: Vec::new(),
+    };
+    *NOTICE.lock().unwrap() = Some((badge, Instant::now() + shown));
+}
+
+/// The overlay's badge about files, while there is one to show.
+pub fn notice() -> Option<Badge> {
+    let mut n = NOTICE.lock().unwrap();
+    match n.as_ref() {
+        Some((badge, until)) if Instant::now() < *until => Some(badge.clone()),
+        _ => {
+            *n = None;
+            None
+        }
+    }
+}
+
 /// Biggest read from a file at once.
 const CHUNK: usize = 256 * 1024;
 
-/// Sends `copy` to the Mac on a stream of its own. Says how it went;
-/// errors end up in the log, never as a silent nothing (F9).
+/// Sends `copy` to the Mac on a stream of its own. Says how it went, in
+/// the log and the overlay; never a silent nothing (F9).
 pub async fn send(conn: quinn::Connection, copy: FileCopy) {
     if let Err(e) = try_send(&conn, &copy).await {
         say!("files: not sent to the Mac: {e:#}");
+        notify(
+            Tone::Amber,
+            "Not copied to the Mac",
+            format!("{e:#}"),
+            Duration::from_secs(8),
+        );
+    }
+}
+
+/// Resets its stream when dropped unfinished (a newer copy, an error), so
+/// the Mac throws the copy away instead of taking it for complete.
+struct Resetting(Option<quinn::SendStream>);
+
+impl Drop for Resetting {
+    fn drop(&mut self) {
+        if let Some(mut s) = self.0.take() {
+            let _ = s.reset(0u32.into());
+        }
     }
 }
 
@@ -162,12 +209,20 @@ async fn try_send(conn: &quinn::Connection, copy: &FileCopy) -> anyhow::Result<(
         );
     }
     offer.check().map_err(|e| anyhow!(e))?;
-    say!("files → Mac: {}", summary(&offer));
+    let what = summary(&offer);
+    say!("files → Mac: {what}");
+    notify(
+        Tone::Blue,
+        "Copying to the Mac",
+        what.clone(),
+        Duration::from_secs(3600),
+    );
     let started = Instant::now();
-    let mut stream = conn.open_uni().await?;
+    let mut guard = Resetting(Some(conn.open_uni().await?));
+    let stream = guard.0.as_mut().expect("just set");
     // Below video, input and control: a big copy mustn't hold them up.
     let _ = stream.set_priority(-1);
-    quic::send(&mut stream, &offer)
+    quic::send(stream, &offer)
         .await
         .map_err(|e| anyhow!("{e}"))?;
     let mut buf = vec![0u8; CHUNK];
@@ -183,7 +238,6 @@ async fn try_send(conn: &quinn::Connection, copy: &FileCopy) -> anyhow::Result<(
                 .await
                 .with_context(|| format!("reading {}", source.display()))?;
             if n == 0 {
-                let _ = stream.reset(0u32.into());
                 bail!("{} got shorter while it was sent", source.display());
             }
             stream.write_all(&buf[..n]).await?;
@@ -193,10 +247,18 @@ async fn try_send(conn: &quinn::Connection, copy: &FileCopy) -> anyhow::Result<(
     stream.finish()?;
     // Wait until the Mac has it all, so the time says something.
     let _ = stream.stopped().await;
+    // Complete: nothing to reset.
+    guard.0 = None;
     say!(
         "files: {:.1} MB on the Mac's clipboard in {:.1} s",
         total as f64 / 1e6,
         started.elapsed().as_secs_f32()
+    );
+    notify(
+        Tone::Blue,
+        "On the Mac's clipboard",
+        format!("{what}: paste with ⌘V"),
+        Duration::from_secs(5),
     );
     Ok(())
 }
