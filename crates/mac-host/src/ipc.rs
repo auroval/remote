@@ -84,6 +84,9 @@ pub enum FromAgent {
     SoundViaDevice,
     /// Text copied in this session, for the client.
     Clipboard(String),
+    /// The client's copy of files is on the clipboard, or not and why
+    /// ([`HostControl::FilesTaken`], [`HostControl::FilesRefused`]).
+    Files(Result<(), String>),
     /// A message for the client as it is (the pointer's shape and moves).
     Control(HostControl),
     /// Capture couldn't start or stopped; the session is over.

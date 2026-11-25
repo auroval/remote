@@ -26,10 +26,12 @@ pub struct Inbox {
 impl Inbox {
     /// `done` gets the top-level paths of every complete copy, for the
     /// clipboard. `allowed` is asked when a copy begins (the screen may be
-    /// locked by then).
+    /// locked by then). `report` hears how each copy ended, for the client;
+    /// not for one the client cancelled itself.
     pub fn start(
         done: impl Fn(Vec<PathBuf>) + Send + 'static,
         allowed: impl Fn() -> Result<(), String> + Send + 'static,
+        report: impl Fn(Result<(), String>) + Send + 'static,
     ) -> Self {
         let base = base_dir();
         clean_leftovers(&base);
@@ -37,7 +39,7 @@ impl Inbox {
         let thread = std::thread::Builder::new()
             .name("files".into())
             .spawn(move || {
-                run(&base, rx, done, allowed);
+                run(&base, rx, done, allowed, report);
                 let _ = std::fs::remove_dir_all(&base);
             })
             .ok();
@@ -100,6 +102,7 @@ fn run(
     rx: Receiver<Incoming>,
     done: impl Fn(Vec<PathBuf>),
     allowed: impl Fn() -> Result<(), String>,
+    report: impl Fn(Result<(), String>),
 ) {
     let mut next = 0u64;
     let mut current: Option<Writer> = None;
@@ -116,6 +119,7 @@ fn run(
                 drop_current(current.take());
                 if let Err(why) = allowed() {
                     println!("files: not taking a copy from the client: {why}");
+                    report(Err(why));
                     continue;
                 }
                 next += 1;
@@ -134,6 +138,7 @@ fn run(
                     Err(e) => {
                         eprintln!("files: can't take the client's copy: {e}");
                         let _ = std::fs::remove_dir_all(&dir);
+                        report(Err(format!("the Mac couldn't write it: {e}")));
                     }
                 }
             }
@@ -143,6 +148,7 @@ fn run(
                     if let Err(e) = w.write(&data) {
                         eprintln!("files: writing the client's copy failed: {e}");
                         drop_current(current.take());
+                        report(Err(format!("the Mac couldn't write it: {e}")));
                     }
                 }
             }
@@ -160,10 +166,12 @@ fn run(
                             let _ = std::fs::remove_dir_all(kept.remove(0));
                         }
                         done(roots);
+                        report(Ok(()));
                     }
                     Err(e) => {
                         eprintln!("files: the client's copy is incomplete: {e}");
                         let _ = std::fs::remove_dir_all(&dir);
+                        report(Err(format!("it arrived incomplete: {e}")));
                     }
                 }
             }

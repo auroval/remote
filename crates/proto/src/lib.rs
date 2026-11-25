@@ -258,6 +258,12 @@ pub enum HostControl {
     /// The pointer is in the video again (e.g. the login window took over,
     /// where the shape can't be read): stop drawing it locally.
     CursorInVideo,
+    /// The client's latest copy of files is on the Mac's clipboard.
+    FilesTaken,
+    /// The Mac didn't take the client's latest copy of files, and why
+    /// (the screen is locked, the login window, a write failed). The client
+    /// stops sending it.
+    FilesRefused(String),
 }
 
 /// A pointer shape, in the captured display's pixels (2× on a Retina Mac).

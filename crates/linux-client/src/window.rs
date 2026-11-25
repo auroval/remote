@@ -29,6 +29,9 @@ use crate::overlay::{Overlay, render_badge, render_card};
 use crate::pointer::{Change, Pointer};
 
 /// How long the "input → Mac" note shows after grabbing.
+/// How long after the window opens a clipboard change is still what was
+/// there before the session (see `settled` in [`run`]).
+const CLIPBOARD_SETTLE: Duration = Duration::from_secs(3);
 const TOAST: Duration = Duration::from_secs(2);
 
 /// No frames or pongs for this long while connected: say so. Pongs come
@@ -165,6 +168,10 @@ pub fn run(
     if link.files.is_some() {
         copies.noted(crate::copies::on_clipboard());
     }
+    // On Wayland the clipboard only reaches a window with focus: what's on
+    // it already shows up as a change once ours gets focus. Changes this
+    // soon after the start are that, not copies made in the session.
+    let settled = Instant::now() + CLIPBOARD_SETTLE;
     let default_cursor = Cursor::from_system(SystemCursor::Arrow).ok();
     let mut pointer = Pointer::default();
     // Grabbed: compositor shortcuts (Super+…) go to the Mac, and the pointer
@@ -269,6 +276,16 @@ pub fn run(
                 Event::Quit { .. } => {
                     forwarder.release_keys();
                     return Ok(());
+                }
+                Event::ClipboardUpdate { .. } if Instant::now() < settled => {
+                    if link.clipboard.is_some()
+                        && let Ok(text) = clipboard.clipboard_text()
+                    {
+                        echo.noted(&text);
+                    }
+                    if link.files.is_some() {
+                        copies.noted(crate::copies::on_clipboard());
+                    }
                 }
                 Event::ClipboardUpdate { .. } => {
                     if let Some((out, _)) = &link.clipboard {

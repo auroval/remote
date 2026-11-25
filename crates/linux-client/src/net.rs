@@ -842,6 +842,8 @@ impl Live {
                             let _ = c.send(text);
                         }
                     }
+                    HostControl::FilesTaken => crate::copies::answered(Ok(())),
+                    HostControl::FilesRefused(why) => crate::copies::answered(Err(why)),
                     msg @ (HostControl::CursorImage(_)
                     | HostControl::CursorShow(_)
                     | HostControl::CursorMoved { .. }

@@ -734,6 +734,13 @@ async fn follow_console(mut f: Following) {
                     }
                     // Sent straight to the client by the agent's reader.
                     Some(FromAgent::Hello { .. } | FromAgent::Audio(_) | FromAgent::SoundViaDevice) => continue,
+                    Some(FromAgent::Files(result)) => {
+                        let _ = f.notices.send(match result {
+                            Ok(()) => HostControl::FilesTaken,
+                            Err(why) => HostControl::FilesRefused(why),
+                        });
+                        continue;
+                    }
                     Some(FromAgent::Clipboard(text)) => {
                         let _ = f.notices.send(HostControl::Clipboard(text));
                         continue;

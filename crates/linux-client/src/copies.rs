@@ -13,6 +13,7 @@ use std::ffi::{CString, OsString};
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
@@ -160,6 +161,45 @@ pub fn notice() -> Option<Badge> {
     }
 }
 
+/// The copy on its way, and since when: for the Mac's answer.
+static SENDING: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+/// Counts the Mac's refusals; a copy being sent stops at the next one.
+static REFUSALS: AtomicU64 = AtomicU64::new(0);
+
+/// The Mac's answer to our latest copy ([`HostControl::FilesTaken`],
+/// [`HostControl::FilesRefused`]).
+///
+/// [`HostControl::FilesTaken`]: auroval_proto::HostControl::FilesTaken
+/// [`HostControl::FilesRefused`]: auroval_proto::HostControl::FilesRefused
+pub fn answered(answer: Result<(), String>) {
+    let sending = SENDING.lock().unwrap().take();
+    let what = sending.as_ref().map(|(w, _)| w.clone()).unwrap_or_default();
+    match answer {
+        Ok(()) => {
+            let secs = sending
+                .map(|(_, t)| t.elapsed().as_secs_f32())
+                .unwrap_or(0.0);
+            say!("files: {what} on the Mac's clipboard after {secs:.1} s");
+            notify(
+                Tone::Blue,
+                "On the Mac's clipboard",
+                format!("{what}: paste with ⌘V"),
+                Duration::from_secs(5),
+            );
+        }
+        Err(why) => {
+            REFUSALS.fetch_add(1, Ordering::Relaxed);
+            say!("files: the Mac didn't take {what}: {why}");
+            notify(
+                Tone::Amber,
+                "Not copied to the Mac",
+                why,
+                Duration::from_secs(8),
+            );
+        }
+    }
+}
+
 /// Biggest read from a file at once.
 const CHUNK: usize = 256 * 1024;
 
@@ -217,7 +257,8 @@ async fn try_send(conn: &quinn::Connection, copy: &FileCopy) -> anyhow::Result<(
         what.clone(),
         Duration::from_secs(3600),
     );
-    let started = Instant::now();
+    *SENDING.lock().unwrap() = Some((what.clone(), Instant::now()));
+    let refusals = REFUSALS.load(Ordering::Relaxed);
     let mut guard = Resetting(Some(conn.open_uni().await?));
     let stream = guard.0.as_mut().expect("just set");
     // Below video, input and control: a big copy mustn't hold them up.
@@ -232,6 +273,10 @@ async fn try_send(conn: &quinn::Connection, copy: &FileCopy) -> anyhow::Result<(
             .with_context(|| format!("opening {}", source.display()))?;
         let mut left = size;
         while left > 0 {
+            if REFUSALS.load(Ordering::Relaxed) != refusals {
+                // The Mac said no (and the overlay says why): stop here.
+                return Ok(());
+            }
             let want = (left as usize).min(CHUNK);
             let n = file
                 .read(&mut buf[..want])
@@ -247,19 +292,9 @@ async fn try_send(conn: &quinn::Connection, copy: &FileCopy) -> anyhow::Result<(
     stream.finish()?;
     // Wait until the Mac has it all, so the time says something.
     let _ = stream.stopped().await;
-    // Complete: nothing to reset.
+    // Complete: nothing to reset. The Mac says when it's on its
+    // clipboard ([`answered`]).
     guard.0 = None;
-    say!(
-        "files: {:.1} MB on the Mac's clipboard in {:.1} s",
-        total as f64 / 1e6,
-        started.elapsed().as_secs_f32()
-    );
-    notify(
-        Tone::Blue,
-        "On the Mac's clipboard",
-        format!("{what}: paste with ⌘V"),
-        Duration::from_secs(5),
-    );
     Ok(())
 }
 
