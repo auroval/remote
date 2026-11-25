@@ -1,5 +1,6 @@
-//! Files copied on one side, for the other side's clipboard
-//! (docs/PRD-file-transfer.md).
+//! Files copied on one side, for the other side's clipboard, or dropped
+//! on the client's window, for wherever they were dropped on the Mac
+//! (docs/PRD-file-transfer.md, F10).
 //!
 //! Each copy is a unidirectional QUIC stream of its own, from the side that
 //! copied: one [`FileOffer`] message, then the bytes of every
@@ -26,10 +27,37 @@ pub const MAX_FILE_ENTRIES: usize = 10_000;
 /// The longest a name in a path may be, in bytes (as on APFS and ext4).
 pub const MAX_NAME_BYTES: usize = 255;
 
-/// What a copy holds. Folders come before what's in them.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+/// What a copy holds, and where it goes. Folders come before what's in
+/// them.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct FileOffer {
     pub entries: Vec<FileEntry>,
+    pub to: FileDest,
+}
+
+/// Where a copy goes on the other side.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Default)]
+pub enum FileDest {
+    /// On the clipboard, for a paste.
+    #[default]
+    Clipboard,
+    /// Dropped at a point of the picture, `0.0..=1.0` from its top left
+    /// (like [`crate::InputEvent::MouseMove`]): into whatever is there,
+    /// or nowhere.
+    Drop { x: f32, y: f32 },
+}
+
+impl FileDest {
+    /// A drop inside the picture, or the clipboard.
+    pub fn check(&self) -> Result<(), String> {
+        match *self {
+            FileDest::Clipboard => Ok(()),
+            FileDest::Drop { x, y } if (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y) => {
+                Ok(())
+            }
+            FileDest::Drop { x, y } => Err(format!("a drop outside the picture ({x}, {y})")),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -50,7 +78,7 @@ pub enum FileKind {
 
 /// One step of a copy on its way in, as the daemon passes it to the agent
 /// that writes it.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum Incoming {
     Begin(FileOffer),
     Data(Vec<u8>),
@@ -81,8 +109,9 @@ impl FileOffer {
 
     /// Whether the offer is one a receiver may write: within the limits,
     /// every name a plain one, no path twice, every folder before its
-    /// contents.
+    /// contents, a drop inside the picture.
     pub fn check(&self) -> Result<(), String> {
+        self.to.check()?;
         if self.entries.is_empty() {
             return Err("nothing in it".into());
         }
@@ -360,6 +389,7 @@ mod tests {
         for bad in ["", ".", "..", "a/b", "a\\b", "nul\0", &"x".repeat(256)] {
             let offer = FileOffer {
                 entries: vec![entry(&[bad], FileKind::File { size: 0 })],
+                ..Default::default()
             };
             assert!(offer.check().is_err(), "{bad:?} passed");
         }
@@ -369,14 +399,47 @@ mod tests {
                 entry(&["map", ".hidden"], FileKind::File { size: 1 }),
                 entry(&["map", "..ok"], FileKind::File { size: 1 }),
             ],
+            ..Default::default()
         };
         ok.check().unwrap();
+    }
+
+    #[test]
+    fn drops_outside_the_picture_are_refused() {
+        let at = |x: f32, y: f32| FileOffer {
+            entries: vec![entry(&["f"], FileKind::File { size: 1 })],
+            to: FileDest::Drop { x, y },
+        };
+        at(0.0, 1.0).check().unwrap();
+        at(0.5, 0.25).check().unwrap();
+        for (x, y) in [
+            (-0.1, 0.5),
+            (0.5, 1.01),
+            (f32::NAN, 0.5),
+            (0.5, f32::INFINITY),
+        ] {
+            assert!(at(x, y).check().is_err(), "({x}, {y}) passed");
+        }
+    }
+
+    #[test]
+    fn where_a_copy_goes_survives_the_wire() {
+        for to in [FileDest::Clipboard, FileDest::Drop { x: 0.25, y: 0.75 }] {
+            let offer = FileOffer {
+                entries: vec![entry(&["f"], FileKind::File { size: 3 })],
+                to,
+            };
+            let bytes = crate::encode(&offer).unwrap();
+            let back: FileOffer = crate::decode_body(&bytes[4..]).unwrap();
+            assert_eq!(back, offer);
+        }
     }
 
     #[test]
     fn offers_out_of_order_twice_or_too_big_are_refused() {
         let orphan = FileOffer {
             entries: vec![entry(&["d", "f"], FileKind::File { size: 1 })],
+            ..Default::default()
         };
         assert!(orphan.check().is_err());
         let twice = FileOffer {
@@ -384,6 +447,7 @@ mod tests {
                 entry(&["f"], FileKind::File { size: 1 }),
                 entry(&["f"], FileKind::File { size: 1 }),
             ],
+            ..Default::default()
         };
         assert!(twice.check().is_err());
         let big = FileOffer {
@@ -396,6 +460,7 @@ mod tests {
                 ),
                 entry(&["b"], FileKind::File { size: 1 }),
             ],
+            ..Default::default()
         };
         assert!(big.check().is_err());
         assert!(FileOffer::default().check().is_err());
@@ -411,6 +476,7 @@ mod tests {
                 entry(&["map", "empty"], FileKind::File { size: 0 }),
                 entry(&["map", "two.txt"], FileKind::File { size: 6 }),
             ],
+            ..Default::default()
         };
         let mut w = Writer::new(&dir, &offer).unwrap();
         for chunk in [&b"hel"[..], b"lo wo", b"rld"] {
@@ -436,6 +502,7 @@ mod tests {
         let dir = tempdir("count");
         let offer = FileOffer {
             entries: vec![entry(&["f"], FileKind::File { size: 2 })],
+            ..Default::default()
         };
         let mut w = Writer::new(&dir, &offer).unwrap();
         assert!(w.write(b"abc").is_err());
@@ -454,6 +521,7 @@ mod tests {
         fs::write(dir.join("f"), b"keep").unwrap();
         let offer = FileOffer {
             entries: vec![entry(&["f"], FileKind::File { size: 1 })],
+            ..Default::default()
         };
         assert!(Writer::new(&dir, &offer).is_err());
         assert_eq!(fs::read(dir.join("f")).unwrap(), b"keep");

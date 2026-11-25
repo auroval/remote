@@ -592,7 +592,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                 // The login window (or a session without clipboard).
                 None => {
                     if matches!(msg, auroval_proto::files::Incoming::Begin(_)) {
-                        let why = "the Mac has no clipboard for it (login window)";
+                        let why = "the Mac has no user session for it (login window)";
                         let _ = out.send(FromAgent::Files(Err(why.into())));
                     }
                 }
@@ -683,7 +683,7 @@ fn start(
     });
     let files = pasteboard.as_ref().map(|p| {
         let out = out.clone();
-        inbox(p, move |r| {
+        inbox(p, display.id, move |r| {
             let _ = out.send(FromAgent::Files(r));
         })
     });
@@ -746,14 +746,17 @@ fn start(
     })
 }
 
-/// Takes the files the client copies onto `pasteboard`, while the screen
-/// is unlocked; `report` tells the client how each went.
+/// Takes the files the client copies onto `pasteboard`, and drops the
+/// files dropped on its window where they were dropped on `display`, while
+/// the screen is unlocked; `report` tells the client how each went.
 pub fn inbox(
     pasteboard: &pasteboard::Watcher,
+    display: u32,
     report: impl Fn(Result<(), String>) + Send + 'static,
 ) -> crate::files::Inbox {
     crate::files::Inbox::start(
         pasteboard.files_putter(),
+        move |at, paths| crate::drop::drop_at(display, at, paths),
         || {
             if crate::curtain::screen_locked() {
                 Err("the Mac's screen is locked".into())

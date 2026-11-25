@@ -49,6 +49,15 @@ pub struct Rect {
     pub height: f64,
 }
 
+/// Where `x, y` (`0.0..=1.0` over the picture, clamped) is on `display`,
+/// in global coordinates.
+pub fn at(display: Rect, x: f32, y: f32) -> Point {
+    Point {
+        x: display.x + f64::from(x.clamp(0.0, 1.0)) * display.width,
+        y: display.y + f64::from(y.clamp(0.0, 1.0)) * display.height,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
     Key {
@@ -132,10 +141,7 @@ impl InputState {
         match event {
             InputEvent::Key { hid, down } => self.key(hid, down),
             InputEvent::MouseMove { x, y } => {
-                self.pos = Point {
-                    x: self.display.x + f64::from(x.clamp(0.0, 1.0)) * self.display.width,
-                    y: self.display.y + f64::from(y.clamp(0.0, 1.0)) * self.display.height,
-                };
+                self.pos = at(self.display, x, y);
                 vec![Action::Move {
                     at: self.pos,
                     dragging: self.buttons.first().copied(),

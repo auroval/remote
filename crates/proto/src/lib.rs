@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 14;
+pub const PROTOCOL_VERSION: u16 = 15;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"auroval/1";
@@ -258,7 +258,8 @@ pub enum HostControl {
     /// The pointer is in the video again (e.g. the login window took over,
     /// where the shape can't be read): stop drawing it locally.
     CursorInVideo,
-    /// The client's latest copy of files is on the Mac's clipboard.
+    /// The client's latest copy of files is on the Mac's clipboard, or,
+    /// for a drop ([`files::FileDest::Drop`]), something there took it.
     FilesTaken,
     /// The Mac didn't take the client's latest copy of files, and why
     /// (the screen is locked, the login window, a write failed). The client

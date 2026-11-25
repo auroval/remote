@@ -8,6 +8,10 @@
 //!
 //! The copy goes to the Mac right away, on a stream of its own: macOS has
 //! no way to fetch it at paste time (spike S, b).
+//!
+//! Files dropped on the window go the same way, with the point where they
+//! were dropped (F10, [`crate::drops`]). SDL hands us their paths; in the
+//! Flatpak it gets them from the same portal, for files (not folders).
 
 use std::ffi::{CString, OsString};
 use std::os::unix::ffi::OsStringExt;
@@ -17,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
-use auroval_proto::files::{FileOffer, MAX_FILES_BYTES, scan};
+use auroval_proto::files::{FileDest, FileOffer, MAX_FILES_BYTES, scan};
 use auroval_proto::quic;
 use tokio::io::AsyncReadExt;
 
@@ -32,6 +36,21 @@ pub struct FileCopy {
     pub uris: Option<String>,
     /// The FileTransfer portal's key for the copy; used in the Flatpak.
     pub portal_key: Option<String>,
+}
+
+/// Files for the Mac.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outgoing {
+    /// Copied here, for the Mac's clipboard.
+    Copy(FileCopy),
+    /// Dropped on the window, at `at` (`0.0..=1.0` over the picture).
+    Drop { paths: Vec<PathBuf>, at: (f32, f32) },
+}
+
+impl Outgoing {
+    fn is_drop(&self) -> bool {
+        matches!(self, Outgoing::Drop { .. })
+    }
 }
 
 /// The files on our clipboard, if it holds any. Call on SDL's thread.
@@ -115,6 +134,23 @@ async fn resolve(copy: &FileCopy) -> anyhow::Result<Vec<PathBuf>> {
     Ok(copy.uris.as_deref().map(uri_paths).unwrap_or_default())
 }
 
+/// Whether we may read every dropped path. In the Flatpak SDL gets dropped
+/// files from the portal, but not folders: for those it falls back to paths
+/// on the host, which the sandbox can't see.
+fn readable(paths: &[PathBuf]) -> anyhow::Result<()> {
+    if let Some(p) = paths.iter().find(|p| std::fs::symlink_metadata(p).is_err()) {
+        if in_flatpak() {
+            bail!(
+                "the Flatpak can't read {} (dropped folders don't come through the file \
+                 portal): drop the files in it, or copy and paste the folder",
+                p.display()
+            );
+        }
+        bail!("can't read {}", p.display());
+    }
+    Ok(())
+}
+
 /// Asks the FileTransfer portal for the files behind `key`.
 async fn retrieve(key: &str) -> anyhow::Result<Vec<PathBuf>> {
     let conn = zbus::Connection::session()
@@ -161,8 +197,9 @@ pub fn notice() -> Option<Badge> {
     }
 }
 
-/// The copy on its way, and since when: for the Mac's answer.
-static SENDING: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+/// The copy on its way, since when, and whether it's a drop: for the
+/// Mac's answer.
+static SENDING: Mutex<Option<(String, Instant, bool)>> = Mutex::new(None);
 /// Counts the Mac's refusals; a copy being sent stops at the next one.
 static REFUSALS: AtomicU64 = AtomicU64::new(0);
 
@@ -173,11 +210,29 @@ static REFUSALS: AtomicU64 = AtomicU64::new(0);
 /// [`HostControl::FilesRefused`]: auroval_proto::HostControl::FilesRefused
 pub fn answered(answer: Result<(), String>) {
     let sending = SENDING.lock().unwrap().take();
-    let what = sending.as_ref().map(|(w, _)| w.clone()).unwrap_or_default();
+    let what = sending
+        .as_ref()
+        .map(|(w, _, _)| w.clone())
+        .unwrap_or_default();
+    let dropped = sending.as_ref().is_some_and(|(_, _, d)| *d);
     match answer {
+        Ok(()) if dropped => {
+            say!("files: {what} dropped on the Mac");
+            notify(
+                Tone::Blue,
+                "Dropped on the Mac",
+                what,
+                Duration::from_secs(5),
+            );
+        }
+        Err(why) if dropped => {
+            REFUSALS.fetch_add(1, Ordering::Relaxed);
+            say!("files: {what} not dropped on the Mac: {why}");
+            not_sent(true, why);
+        }
         Ok(()) => {
             let secs = sending
-                .map(|(_, t)| t.elapsed().as_secs_f32())
+                .map(|(_, t, _)| t.elapsed().as_secs_f32())
                 .unwrap_or(0.0);
             say!("files: {what} on the Mac's clipboard after {secs:.1} s");
             notify(
@@ -203,18 +258,29 @@ pub fn answered(answer: Result<(), String>) {
 /// Biggest read from a file at once.
 const CHUNK: usize = 256 * 1024;
 
-/// Sends `copy` to the Mac on a stream of its own. Says how it went, in
+/// Sends `files` to the Mac on a stream of its own. Says how it went, in
 /// the log and the overlay; never a silent nothing (F9).
-pub async fn send(conn: quinn::Connection, copy: FileCopy) {
-    if let Err(e) = try_send(&conn, &copy).await {
+pub async fn send(conn: quinn::Connection, files: Outgoing) {
+    if let Err(e) = try_send(&conn, &files).await {
         say!("files: not sent to the Mac: {e:#}");
-        notify(
-            Tone::Amber,
-            "Not copied to the Mac",
-            format!("{e:#}"),
-            Duration::from_secs(8),
-        );
+        not_sent(files.is_drop(), format!("{e:#}"));
     }
+}
+
+/// Says in the overlay why files didn't go to the Mac.
+fn not_sent(drop: bool, why: String) {
+    let body = if drop {
+        "Not dropped on the Mac"
+    } else {
+        "Not copied to the Mac"
+    };
+    notify(Tone::Amber, body, why, Duration::from_secs(8));
+}
+
+/// A drop that can't go to the Mac, and why.
+pub fn not_dropped(why: &str) {
+    say!("files: drop not sent to the Mac: {why}");
+    not_sent(true, why.into());
 }
 
 /// Resets its stream when dropped unfinished (a newer copy, an error), so
@@ -229,14 +295,21 @@ impl Drop for Resetting {
     }
 }
 
-async fn try_send(conn: &quinn::Connection, copy: &FileCopy) -> anyhow::Result<()> {
-    let paths = resolve(copy).await?;
+async fn try_send(conn: &quinn::Connection, files: &Outgoing) -> anyhow::Result<()> {
+    let (paths, to) = match files {
+        Outgoing::Copy(copy) => (resolve(copy).await?, FileDest::Clipboard),
+        Outgoing::Drop { paths, at: (x, y) } => {
+            readable(paths)?;
+            (paths.clone(), FileDest::Drop { x: *x, y: *y })
+        }
+    };
     if paths.is_empty() {
         bail!("no files in the copy");
     }
-    let (offer, sources, skipped) = tokio::task::spawn_blocking(move || scan(&paths))
+    let (mut offer, sources, skipped) = tokio::task::spawn_blocking(move || scan(&paths))
         .await?
         .context("reading the copied files")?;
+    offer.to = to;
     for s in &skipped {
         say!("files: left out {} (not a file or folder)", s.display());
     }
@@ -250,14 +323,18 @@ async fn try_send(conn: &quinn::Connection, copy: &FileCopy) -> anyhow::Result<(
     }
     offer.check().map_err(|e| anyhow!(e))?;
     let what = summary(&offer);
-    say!("files → Mac: {what}");
-    notify(
-        Tone::Blue,
-        "Copying to the Mac",
-        what.clone(),
-        Duration::from_secs(3600),
+    let drop = files.is_drop();
+    say!(
+        "files → Mac{}: {what}",
+        if drop { " (dropped)" } else { "" }
     );
-    *SENDING.lock().unwrap() = Some((what.clone(), Instant::now()));
+    let body = if drop {
+        "Dropping on the Mac"
+    } else {
+        "Copying to the Mac"
+    };
+    notify(Tone::Blue, body, what.clone(), Duration::from_secs(3600));
+    *SENDING.lock().unwrap() = Some((what.clone(), Instant::now(), drop));
     let refusals = REFUSALS.load(Ordering::Relaxed);
     let mut guard = Resetting(Some(conn.open_uni().await?));
     let stream = guard.0.as_mut().expect("just set");

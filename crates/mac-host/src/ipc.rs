@@ -16,7 +16,7 @@ pub const SOCKET: &str = "/var/run/auroval/agent.sock";
 
 /// Daemon and agent are one binary, installed together; a different build
 /// on the other end means a half-finished install.
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc13");
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc14");
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ToAgent {

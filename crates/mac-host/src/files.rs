@@ -1,17 +1,19 @@
 //! Files the client copied, written to a temporary folder of this process
-//! and put on the Mac's clipboard from there (docs/PRD-file-transfer.md).
+//! and put on the Mac's clipboard from there (docs/PRD-file-transfer.md);
+//! or files dropped on the client's window, dropped from there where they
+//! were dropped on the Mac ([`crate::drop`], F10).
 //!
 //! Runs where the pasteboard is: in the agent of a user session, or in
 //! `serve`. Writing happens on a thread of its own, so a big copy never
 //! holds up input. Everything is removed when the session ends (and
 //! leftovers of a crashed run at the next start): pasted files are Finder's
-//! own copies by then.
+//! own copies by then. A drop that nothing took is removed at once.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 
-use auroval_proto::files::{Incoming, Writer};
+use auroval_proto::files::{FileDest, Incoming, Writer};
 
 /// Completed copies kept on disk: the one on the clipboard and the one
 /// before, which a slow paste may still be reading.
@@ -25,11 +27,15 @@ pub struct Inbox {
 
 impl Inbox {
     /// `done` gets the top-level paths of every complete copy, for the
-    /// clipboard. `allowed` is asked when a copy begins (the screen may be
-    /// locked by then). `report` hears how each copy ended, for the client;
-    /// not for one the client cancelled itself.
+    /// clipboard. `dropped` drops a complete drop's top-level paths at its
+    /// point (`0.0..=1.0` over the picture), and says whether something
+    /// there took them; it may take a moment. `allowed` is asked when a
+    /// copy begins (the screen may be locked by then). `report` hears how
+    /// each copy ended, for the client; not for one the client cancelled
+    /// itself.
     pub fn start(
         done: impl Fn(Vec<PathBuf>) + Send + 'static,
+        dropped: impl Fn((f32, f32), &[PathBuf]) -> Result<(), String> + Send + 'static,
         allowed: impl Fn() -> Result<(), String> + Send + 'static,
         report: impl Fn(Result<(), String>) + Send + 'static,
     ) -> Self {
@@ -39,7 +45,7 @@ impl Inbox {
         let thread = std::thread::Builder::new()
             .name("files".into())
             .spawn(move || {
-                run(&base, rx, done, allowed, report);
+                run(&base, rx, done, dropped, allowed, report);
                 let _ = std::fs::remove_dir_all(&base);
             })
             .ok();
@@ -101,11 +107,14 @@ fn run(
     base: &Path,
     rx: Receiver<Incoming>,
     done: impl Fn(Vec<PathBuf>),
+    dropped: impl Fn((f32, f32), &[PathBuf]) -> Result<(), String>,
     allowed: impl Fn() -> Result<(), String>,
     report: impl Fn(Result<(), String>),
 ) {
     let mut next = 0u64;
+    // The copy coming in, and where it goes.
     let mut current: Option<Writer> = None;
+    let mut to = FileDest::Clipboard;
     let mut kept: Vec<PathBuf> = Vec::new();
     let mut bytes = 0u64;
     let drop_current = |w: Option<Writer>| {
@@ -133,6 +142,7 @@ fn run(
                             offer.total_bytes() as f64 / 1e6
                         );
                         bytes = 0;
+                        to = offer.to;
                         current = Some(w);
                     }
                     Err(e) => {
@@ -155,8 +165,26 @@ fn run(
             Incoming::End => {
                 let Some(w) = current.take() else { continue };
                 let dir = w.dir().to_path_buf();
-                match w.finish() {
-                    Ok(roots) => {
+                match (w.finish(), to) {
+                    // Taken: the app that took it may still be reading it
+                    // (Slack uploading), so it stays until the session
+                    // ends. Not taken: nothing is left behind (F10).
+                    (Ok(roots), FileDest::Drop { x, y }) => {
+                        // The screen may have locked while it came in.
+                        let r = allowed().and_then(|()| dropped((x, y), &roots));
+                        match &r {
+                            Ok(()) => println!(
+                                "files: {:.1} MB from the client dropped on the Mac",
+                                bytes as f64 / 1e6
+                            ),
+                            Err(why) => {
+                                println!("files: the client's drop didn't land: {why}");
+                                let _ = std::fs::remove_dir_all(&dir);
+                            }
+                        }
+                        report(r);
+                    }
+                    (Ok(roots), FileDest::Clipboard) => {
                         println!(
                             "files: {:.1} MB from the client on the clipboard",
                             bytes as f64 / 1e6
@@ -168,7 +196,7 @@ fn run(
                         done(roots);
                         report(Ok(()));
                     }
-                    Err(e) => {
+                    (Err(e), _) => {
                         eprintln!("files: the client's copy is incomplete: {e}");
                         let _ = std::fs::remove_dir_all(&dir);
                         report(Err(format!("it arrived incomplete: {e}")));

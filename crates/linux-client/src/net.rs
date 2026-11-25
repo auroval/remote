@@ -91,7 +91,7 @@ pub struct Link {
     /// sender, text the Mac copied comes in on the receiver.
     pub clipboard: Option<(UnboundedSender<String>, mpsc::Receiver<String>)>,
     /// Files copied here, for the Mac's clipboard; with clipboard sync only.
-    pub files: Option<UnboundedSender<crate::copies::FileCopy>>,
+    pub files: Option<UnboundedSender<crate::copies::Outgoing>>,
     /// Our window's size in pixels, for the host to size the picture to.
     pub view: UnboundedSender<(u32, u32)>,
     /// Fit or match: how the Mac's display relates to our window.
@@ -183,7 +183,7 @@ struct Requests {
     /// Text copied here, for the Mac. Closed without clipboard sync.
     clipboard: UnboundedReceiver<String>,
     /// Files copied here, for the Mac. Closed without clipboard sync.
-    files: UnboundedReceiver<crate::copies::FileCopy>,
+    files: UnboundedReceiver<crate::copies::Outgoing>,
     /// Our window's size in pixels, when it changed.
     view: UnboundedReceiver<(u32, u32)>,
     /// Fit or match, when the user switched.
