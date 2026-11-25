@@ -52,6 +52,9 @@ static Boolean gStreamActive = true;
 static Boolean gMicActive = true;
 // The next microphone frame to read; UINT64_MAX: not reading yet.
 static UInt64 gMicRead = UINT64_MAX;
+// The sample time just past our last write to the speaker ring;
+// UINT64_MAX until the first write since IO started.
+static UInt64 gNextWrite = UINT64_MAX;
 static Float64 gTicksPerFrame;
 static UInt64 gAnchor;
 static UInt64 gPeriods;
@@ -474,6 +477,7 @@ static OSStatus StartIO(AudioServerPlugInDriverRef d, AudioObjectID device, UInt
         gAnchor = mach_absolute_time();
         gPeriods = 0;
         gMicRead = UINT64_MAX;
+        gNextWrite = UINT64_MAX;
         os_log(gLog, "IO started");
     }
     gIOClients++;
@@ -552,6 +556,27 @@ static OSStatus DoIOOperation(AudioServerPlugInDriverRef d, AudioObjectID device
     if (op != kAudioServerPlugInIOOperationWriteMix || !main || !shared)
         return noErr;
     UInt64 start = (UInt64)cycle->mOutputTime.mSampleTime;
+    // The daemon reads every frame up to `written`, and on a restart a few
+    // thousand before it. Frames we didn't write this time must be silence,
+    // not whatever an earlier run left there: clear the ring when IO starts
+    // again (sample times begin anew) and fill any cycles the HAL skipped.
+    if (gNextWrite == UINT64_MAX || start < gNextWrite) {
+        memset(shared->data, 0, AD_RING_FRAMES * AD_CHANNELS * sizeof(float));
+    } else if (start > gNextWrite) {
+        UInt64 gap = start - gNextWrite;
+        if (gap >= AD_RING_FRAMES) {
+            memset(shared->data, 0, AD_RING_FRAMES * AD_CHANNELS * sizeof(float));
+        } else {
+            UInt32 at = (UInt32)(gNextWrite % AD_RING_FRAMES);
+            UInt32 head = AD_RING_FRAMES - at;
+            if (head > gap)
+                head = (UInt32)gap;
+            memset(shared->data + at * AD_CHANNELS, 0, head * AD_CHANNELS * sizeof(float));
+            if (gap > head)
+                memset(shared->data, 0, (gap - head) * AD_CHANNELS * sizeof(float));
+        }
+    }
+    gNextWrite = start + frames;
     const float *src = main;
     UInt32 pos = (UInt32)(start % AD_RING_FRAMES);
     UInt32 first = AD_RING_FRAMES - pos;
