@@ -35,6 +35,23 @@ Coming from an alpha that installed a bare `auroval-agent` in
 and keeps the pairings, but the permissions now belong to the app, so grant
 them once more (the old `auroval-agent` entries can go).
 
+## Logging in at the login window
+
+After a logout or restart the Mac sits at the **login window**, where macOS
+ignores remote input from third-party processes. To let the Linux client log
+in there (it shows a form for your Mac account and password, and the host
+types them at the login window through macOS Screen Sharing), turn Screen
+Sharing on, once:
+
+- System Settings → General → **Sharing** → turn on **Screen Sharing**.
+- Under its options, set **Allow access for** to **Only these users** and add
+  just your own account.
+
+The host only ever reaches Screen Sharing on the Mac itself (`127.0.0.1`); the
+account and password arrive inside Auroval's own encrypted connection and
+never cross the network in the clear. Without Screen Sharing on, the client's
+form says so and you log in at the Mac instead.
+
 ## Sound
 
 During a session the Mac plays to the Auroval device, so its sound comes

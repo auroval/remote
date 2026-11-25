@@ -494,7 +494,10 @@ fn run(
             .is_ok();
     say!("connecting to {} ({})…", host.name, host.address);
     let title = host.name.clone();
+    // The Mac account remembered for this host prefills the login form; the
+    // closure remembers it (never the password) when the user logs in (#72).
     let fingerprint = host.fingerprint;
+    let login_account = store.remembered_account(&fingerprint);
     let link = net::connect(host, id, clipboard, audio, mic)?;
     if display != auroval_proto::DisplayMode::Fit {
         say!("display: {}", display.name());
@@ -579,6 +582,9 @@ fn run(
             },
             audio: link.audio,
             mic: link.mic,
+            login: link.login,
+            login_account,
+            remember_account: &|name| store.remember_account(&fingerprint, name),
         },
     );
     // Say goodbye, so the host knows we left on purpose (and locks the Mac

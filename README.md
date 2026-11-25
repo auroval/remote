@@ -47,7 +47,7 @@ brew install --cask stormlantern-dev/tap/auroval-host
 auroval-agent install
 ```
 
-`auroval-agent install` asks for your password. Either way, **Auroval.app** lands in Applications and the host starts, now and at every login (also at the login window, view-only there), with a menu-bar item that shows its status.
+`auroval-agent install` asks for your password. Either way, **Auroval.app** lands in Applications and the host starts, now and at every login (also at the login window, where you can log in from the client once Screen Sharing is on, see [Logging in after a restart or logout](#logging-in-after-a-restart-or-logout)), with a menu-bar item that shows its status.
 
 Then, **once**, allow Auroval two things: macOS asks for **Accessibility** and then for **Screen & System Audio Recording** when the menu-bar item first starts. Turn **Auroval** on in each list it opens (or later: System Settings → Privacy & Security, or the menu-bar item's links). No restart needed. `auroval-agent status` shows whether it runs.
 
@@ -90,6 +90,17 @@ auroval
 Keyboard and mouse go to the Mac while the window has them; **Right Ctrl** gives them back to Linux and grabs them again (`--host-key` picks another key, see [Keyboard and the host key](#keyboard-and-the-host-key)). Copy and paste work both ways. When you close the window the Mac locks.
 
 Away from home, connect to the Mac's VPN or Tailscale address: `auroval <address>`. The client only accepts the Mac it paired with, whatever the address.
+
+### Logging in after a restart or logout
+
+After a logout or restart the Mac shows its **login window**. macOS ignores remote input there from any third-party process, so normally you'd have to be at the Mac. Auroval can still log you in: at the login window the client shows a small form for your Mac account and password, and the Mac host types them at the login window through **macOS Screen Sharing**. The picture keeps coming from Auroval as usual, and once you're logged in the session carries on to your desktop.
+
+For this to work, turn Screen Sharing on, **once**, on the Mac:
+
+- System Settings → General → **Sharing** → turn on **Screen Sharing**.
+- Under its options (ⓘ), set **Allow access for** to **Only these users** and add just your own account, so nothing else on the network can start a Screen Sharing session.
+
+Auroval's login only ever talks to Screen Sharing on the Mac itself (`127.0.0.1`), never across the network: your account and password travel to the Mac inside Auroval's own encrypted connection, and the Screen Sharing session that types them stays on the machine. The client remembers your account name per Mac to prefill the form next time; it never stores the password. If Screen Sharing is off, the form says so; you can still log in at the Mac.
 
 ### Updating and removing
 

@@ -326,10 +326,11 @@ pub async fn welcome(
 
 /// Handles the control stream until it ends: keyframe requests go to
 /// `keyframe`, text the client copied to `clipboard`, its window size to
-/// `view_size`, fit or match to `display`, pings are answered with the
+/// `view_size`, login credentials to `login`, fit or match to `display`, pings are answered with the
 /// host clock, and `notices` (e.g.
 /// [`HostControl::Session`] or the Mac's copies) are passed on to the
 /// client.
+#[allow(clippy::too_many_arguments)] // one handler per kind of message
 pub async fn read_control(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
@@ -337,6 +338,7 @@ pub async fn read_control(
     keyframe: impl Fn(),
     clipboard: impl Fn(String),
     view_size: impl Fn(u32, u32),
+    login: impl Fn(auroval_proto::Credentials),
     display: impl Fn(DisplayMode),
 ) {
     // Reading and writing run side by side: a read can't be interrupted
@@ -355,6 +357,9 @@ pub async fn read_control(
                         text.len()
                     );
                 }
+                // The account and password are never printed; the login
+                // handler reports the outcome, not the credentials.
+                ClientControl::LogIn(creds) => login(creds),
                 ClientControl::Ping { client_us } => {
                     let _ = pongs.send(HostControl::Pong {
                         client_us,
