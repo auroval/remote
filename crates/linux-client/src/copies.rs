@@ -303,9 +303,17 @@ impl CopyEcho {
         self.last = copy;
     }
 
-    /// The clipboard changed and holds `copy`: true when it's new.
+    /// The clipboard changed and holds `copy`: true when it's new. The
+    /// same files are the same copy, whatever portal key comes with them: a
+    /// clipboard manager (Klipper) offers a copy again after the file
+    /// manager, with or without the key.
     pub fn is_new(&mut self, copy: &FileCopy) -> bool {
-        if self.last.as_ref() == Some(copy) {
+        let same = match (&self.last, &copy.uris) {
+            (Some(last), Some(uris)) => last.uris.as_ref() == Some(uris),
+            (Some(last), None) => last == copy,
+            (None, _) => false,
+        };
+        if same {
             return false;
         }
         self.last = Some(copy.clone());
@@ -350,5 +358,11 @@ mod tests {
         assert!(echo.is_new(&other));
         assert!(!echo.is_new(&other));
         assert!(echo.is_new(&copy));
+        // Offered again without the key (or with another): the same copy.
+        let again = FileCopy {
+            uris: copy.uris.clone(),
+            portal_key: None,
+        };
+        assert!(!echo.is_new(&again));
     }
 }
