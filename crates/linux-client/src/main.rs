@@ -47,12 +47,16 @@ mod overlay;
 #[cfg(target_os = "linux")]
 mod pointer;
 #[cfg(target_os = "linux")]
+mod received;
+#[cfg(target_os = "linux")]
 mod sharpen;
 #[cfg(target_os = "linux")]
 mod window;
 
 #[cfg(all(target_os = "linux", feature = "test-hooks"))]
 mod testhooks;
+#[cfg(target_os = "linux")]
+mod transfer;
 #[cfg(target_os = "linux")]
 mod trust;
 

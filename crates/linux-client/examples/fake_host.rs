@@ -30,7 +30,9 @@
 //! moves to a new port shows up as one.
 //!
 //! With clipboard sync on, it hands every text the client copies back with
-//! " ✓" added, as if the Mac copied that.
+//! " ✓" added, as if the Mac copied that. With `--send-files PATH` it sends
+//! the file or folder at PATH a second into each session, as if it was
+//! copied in Finder.
 //!
 //! In `match` (`--display match` on the client) it pretends the Mac
 //! switched to a mode of exactly the window's size: the picture then comes
@@ -99,6 +101,29 @@ mod linux {
         Ok(mdns)
     }
 
+    /// What `--send-files` names.
+    static SEND_FILES: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+    /// Sends `path` as a copy of files, on a stream of its own, like the
+    /// Mac's outbox.
+    async fn send_files(conn: quinn::Connection, path: &std::path::Path) -> anyhow::Result<()> {
+        let (offer, sources, _) = auroval_proto::files::scan(&[path.to_path_buf()])?;
+        let mut s = conn.open_uni().await?;
+        let _ = s.set_priority(-1);
+        quic::send(&mut s, &offer)
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
+        for source in sources {
+            s.write_all(&std::fs::read(source)?).await?;
+        }
+        s.finish()?;
+        println!(
+            "  files → client: {}",
+            auroval_proto::files::summary(&offer)
+        );
+        Ok(())
+    }
+
     /// Our "host clock": microseconds since start.
     fn now_us() -> u64 {
         static START: OnceLock<Instant> = OnceLock::new();
@@ -130,6 +155,9 @@ mod linux {
         let close_code: u32 = get("--close-code").map_or(Ok(0), |c| c.parse())?;
         let state = get("--state").map(std::path::PathBuf::from);
         let outage = get("--outage").map(|o| Outage::parse(o)).transpose()?;
+        if let Some(p) = get("--send-files") {
+            let _ = SEND_FILES.set(std::path::PathBuf::from(p));
+        }
 
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
@@ -500,6 +528,15 @@ mod linux {
         };
         quic::send(&mut ctl_send, &welcome).await?;
         let mut video = conn.open_uni().await?;
+        if let Some(path) = SEND_FILES.get().filter(|_| clipboard) {
+            let conn = conn.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if let Err(e) = send_files(conn, path).await {
+                    println!("  files: {e:#}");
+                }
+            });
+        }
 
         // One writer for the control stream; pongs and session changes
         // queue up for it.

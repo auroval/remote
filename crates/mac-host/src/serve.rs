@@ -248,10 +248,36 @@ async fn client(
         })
     });
     let file_notices = notices.clone();
-    let pasteboard = clipboard.then(|| {
-        Arc::new(pasteboard::Watcher::start(move |text| {
-            let _ = notices.send(HostControl::Clipboard(text));
-        }))
+    // The Mac's copies of files, out to the client on streams of their own.
+    let (files_out, files_rx) = tokio::sync::mpsc::unbounded_channel();
+    let outbox = clipboard.then(|| {
+        let failed = notices.clone();
+        Arc::new(crate::agent::outbox(
+            move |step| {
+                let _ = files_out.send((step, ()));
+            },
+            move |why| {
+                let _ = failed.send(HostControl::FilesFailed(why));
+            },
+        ))
+    });
+    let sending_files = outbox.clone().map(|outbox| {
+        tokio::spawn(session::send_files(
+            conn.clone(),
+            files_rx,
+            move |(), sent| match sent {
+                session::FileSent::Written => outbox.written(),
+                session::FileSent::Stopped => outbox.stopped(),
+            },
+        ))
+    });
+    let pasteboard = outbox.as_deref().map(|o| {
+        Arc::new(pasteboard::Watcher::start(
+            move |text| {
+                let _ = notices.send(HostControl::Clipboard(text));
+            },
+            o.copier(),
+        ))
     });
     let to_pasteboard = pasteboard.clone();
     let current_keyframe = keyframe.clone();
@@ -346,6 +372,10 @@ async fn client(
     };
     control.abort();
     pump.abort();
+    if let Some(t) = sending_files {
+        t.abort();
+    }
+    drop(outbox);
     // Dropping the reader drops the injector's sender; it then releases any
     // keys and buttons still held.
     input.abort();

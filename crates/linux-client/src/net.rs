@@ -844,6 +844,7 @@ impl Live {
                     }
                     HostControl::FilesTaken => crate::copies::answered(Ok(())),
                     HostControl::FilesRefused(why) => crate::copies::answered(Err(why)),
+                    HostControl::FilesFailed(why) => crate::received::failed(why),
                     msg @ (HostControl::CursorImage(_)
                     | HostControl::CursorShow(_)
                     | HostControl::CursorMoved { .. }
@@ -874,6 +875,30 @@ impl Live {
                 }
             }
         });
+
+        // The Mac's copies of files: every stream after the video is one.
+        // Taken with clipboard sync only; a new copy replaces one still
+        // coming in.
+        let copies_in = {
+            let conn = conn.clone();
+            let take = shared.clipboard.is_some();
+            tokio::spawn(async move {
+                let mut current: Option<tokio::task::JoinHandle<()>> = None;
+                while let Ok(mut copy) = conn.accept_uni().await {
+                    if let Some(t) = current.take() {
+                        t.abort();
+                    }
+                    if take {
+                        current = Some(tokio::spawn(crate::received::receive(copy)));
+                    } else {
+                        let _ = copy.stop(0u32.into());
+                    }
+                }
+                if let Some(t) = current {
+                    t.abort();
+                }
+            })
+        };
 
         // Sound in, as datagrams: lost ones stay lost.
         let sound = shared.audio.clone().map(|audio| {
@@ -1023,6 +1048,7 @@ impl Live {
             (VideoEnd::Error(e), None) => Failure::transient(e),
         };
         pongs.abort();
+        copies_in.abort();
         if let Some(s) = sound {
             s.abort();
         }

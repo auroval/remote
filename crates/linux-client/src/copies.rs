@@ -17,7 +17,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow, bail};
-use auroval_proto::files::{FileOffer, MAX_FILES_BYTES, scan};
+use auroval_proto::files::{
+    ASK_ABOVE_BYTES, MAX_FILES_BYTES, megabytes, names, scan, sizes, summary,
+};
 use auroval_proto::quic;
 use tokio::io::AsyncReadExt;
 
@@ -138,7 +140,7 @@ async fn retrieve(key: &str) -> anyhow::Result<Vec<PathBuf>> {
 /// What the overlay says about the latest copy, and until when.
 static NOTICE: Mutex<Option<(Badge, Instant)>> = Mutex::new(None);
 
-fn notify(tone: Tone, body: &str, detail: String, shown: Duration) {
+pub(crate) fn notify(tone: Tone, body: &str, detail: String, shown: Duration) {
     let badge = Badge {
         tag: "FILES".into(),
         tone,
@@ -243,13 +245,27 @@ async fn try_send(conn: &quinn::Connection, copy: &FileCopy) -> anyhow::Result<(
     let total = offer.total_bytes();
     if total > MAX_FILES_BYTES {
         bail!(
-            "{:.0} MB is more than the {} MB a copy may be",
-            total as f64 / 1e6,
-            MAX_FILES_BYTES / 1_000_000
+            "{} is more than the {} a copy may be",
+            megabytes(total),
+            megabytes(MAX_FILES_BYTES)
         );
     }
     offer.check().map_err(|e| anyhow!(e))?;
     let what = summary(&offer);
+    // A big copy doesn't start by surprise (F7).
+    if total > ASK_ABOVE_BYTES {
+        say!("files: asking before sending {what}");
+        if !crate::transfer::ask(what.clone()).await {
+            say!("files: not sending {what}");
+            notify(
+                Tone::Amber,
+                "Not copied to the Mac",
+                format!("{what}: you said no"),
+                Duration::from_secs(4),
+            );
+            return Ok(());
+        }
+    }
     say!("files → Mac: {what}");
     notify(
         Tone::Blue,
@@ -266,6 +282,7 @@ async fn try_send(conn: &quinn::Connection, copy: &FileCopy) -> anyhow::Result<(
     quic::send(stream, &offer)
         .await
         .map_err(|e| anyhow!("{e}"))?;
+    let progress = crate::transfer::begin(crate::transfer::Way::ToMac, &names(&offer), total);
     let mut buf = vec![0u8; CHUNK];
     for (source, size) in sources.iter().zip(sizes(&offer)) {
         let mut file = tokio::fs::File::open(source)
@@ -285,7 +302,13 @@ async fn try_send(conn: &quinn::Connection, copy: &FileCopy) -> anyhow::Result<(
             if n == 0 {
                 bail!("{} got shorter while it was sent", source.display());
             }
-            stream.write_all(&buf[..n]).await?;
+            // Cancelled: the stream resets (on the way out), and the Mac
+            // throws away what it has.
+            tokio::select! {
+                r = stream.write_all(&buf[..n]) => r?,
+                () = progress.cancelled() => bail!("cancelled"),
+            }
+            progress.advance(n as u64);
             left -= n as u64;
         }
     }
@@ -296,33 +319,6 @@ async fn try_send(conn: &quinn::Connection, copy: &FileCopy) -> anyhow::Result<(
     // clipboard ([`answered`]).
     guard.0 = None;
     Ok(())
-}
-
-/// The sizes of the offer's files, in its order.
-fn sizes(offer: &FileOffer) -> impl Iterator<Item = u64> + '_ {
-    offer.entries.iter().filter_map(|e| match e.kind {
-        auroval_proto::files::FileKind::File { size } => Some(size),
-        auroval_proto::files::FileKind::Dir => None,
-    })
-}
-
-fn summary(offer: &FileOffer) -> String {
-    let roots: Vec<&str> = offer
-        .entries
-        .iter()
-        .filter(|e| e.path.len() == 1)
-        .map(|e| e.path[0].as_str())
-        .collect();
-    let names = match roots.as_slice() {
-        [one] => one.to_string(),
-        [first, rest @ ..] => format!("{first} and {} more", rest.len()),
-        [] => String::new(),
-    };
-    format!(
-        "{names} ({} file(s), {:.1} MB)",
-        offer.files(),
-        offer.total_bytes() as f64 / 1e6
-    )
 }
 
 /// Keeps the copy that was on the clipboard before the session, and

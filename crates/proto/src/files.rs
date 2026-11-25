@@ -2,7 +2,8 @@
 //! (docs/PRD-file-transfer.md).
 //!
 //! Each copy is a unidirectional QUIC stream of its own, from the side that
-//! copied: one [`FileOffer`] message, then the bytes of every
+//! copied (the client's after its input stream, the host's after its video
+//! stream): one [`FileOffer`] message, then the bytes of every
 //! [`FileKind::File`] entry, in the offer's order, back to back. The end of
 //! the stream is the end of the copy; a reset stream is a cancelled one,
 //! and the receiver throws away what it wrote.
@@ -18,9 +19,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// The most one copy may hold. Bigger copies are refused before anything
-/// is sent.
-pub const MAX_FILES_BYTES: u64 = 500_000_000;
+/// The most one copy may hold, so a broken peer can't fill the disk.
+/// Bigger copies are refused before anything is sent.
+pub const MAX_FILES_BYTES: u64 = 20_000_000_000;
+/// Above this the side that would send asks first (F7): a big copy
+/// shouldn't start by surprise.
+pub const ASK_ABOVE_BYTES: u64 = 500_000_000;
 /// The most entries (files and folders) one copy may hold.
 pub const MAX_FILE_ENTRIES: usize = 10_000;
 /// The longest a name in a path may be, in bytes (as on APFS and ext4).
@@ -48,8 +52,8 @@ pub enum FileKind {
     File { size: u64 },
 }
 
-/// One step of a copy on its way in, as the daemon passes it to the agent
-/// that writes it.
+/// One step of a copy, as it passes between daemon and agent: on its way
+/// in to the agent that writes it, or out from the agent that reads it.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum Incoming {
     Begin(FileOffer),
@@ -95,9 +99,9 @@ impl FileOffer {
         let total = self.total_bytes();
         if total > MAX_FILES_BYTES {
             return Err(format!(
-                "{} MB, more than {} MB",
-                total / 1_000_000,
-                MAX_FILES_BYTES / 1_000_000
+                "{}, more than {}",
+                megabytes(total),
+                megabytes(MAX_FILES_BYTES)
             ));
         }
         let mut seen: HashSet<&[String]> = HashSet::new();
@@ -122,6 +126,48 @@ impl FileOffer {
         }
         Ok(())
     }
+}
+
+/// How the user reads a size: `12.3 MB`, `1.2 GB`.
+pub fn megabytes(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1} GB", bytes as f64 / 1e9)
+    } else {
+        format!("{:.1} MB", bytes as f64 / 1e6)
+    }
+}
+
+/// What a copy is, in a few words: `photos and 2 more (31 file(s), 12.0 MB)`.
+pub fn summary(offer: &FileOffer) -> String {
+    format!(
+        "{} ({} file(s), {})",
+        names(offer),
+        offer.files(),
+        megabytes(offer.total_bytes())
+    )
+}
+
+/// The copy's top-level names, short: `a.txt`, `a.txt and 2 more`.
+pub fn names(offer: &FileOffer) -> String {
+    let roots: Vec<&str> = offer
+        .entries
+        .iter()
+        .filter(|e| e.path.len() == 1)
+        .map(|e| e.path[0].as_str())
+        .collect();
+    match roots.as_slice() {
+        [one] => one.to_string(),
+        [first, rest @ ..] => format!("{first} and {} more", rest.len()),
+        [] => String::new(),
+    }
+}
+
+/// The sizes of the offer's files, in its order.
+pub fn sizes(offer: &FileOffer) -> impl Iterator<Item = u64> + '_ {
+    offer.entries.iter().filter_map(|e| match e.kind {
+        FileKind::File { size } => Some(size),
+        FileKind::Dir => None,
+    })
 }
 
 /// A name that stays where it's put: not empty, not `.` or `..`, no path
@@ -356,6 +402,12 @@ mod tests {
     }
 
     #[test]
+    fn sizes_read_as_megabytes_or_gigabytes() {
+        assert_eq!(megabytes(12_340_000), "12.3 MB");
+        assert_eq!(megabytes(1_240_000_000), "1.2 GB");
+    }
+
+    #[test]
     fn names_that_escape_are_refused() {
         for bad in ["", ".", "..", "a/b", "a\\b", "nul\0", &"x".repeat(256)] {
             let offer = FileOffer {
@@ -480,6 +532,8 @@ mod tests {
         assert_eq!(skipped, vec![dir.join("map/link")]);
         assert_eq!(offer.total_bytes(), 6);
         assert_eq!(offer.files(), 3);
+        assert_eq!(summary(&offer), "map and 1 more (3 file(s), 0.0 MB)");
+        assert_eq!(sizes(&offer).collect::<Vec<_>>(), [1, 2, 3]);
 
         // And what was scanned writes back the same.
         let out = tempdir("scan-out");

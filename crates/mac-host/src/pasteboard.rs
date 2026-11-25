@@ -1,5 +1,7 @@
 //! The Mac's clipboard (the general pasteboard) during a session: text
 //! copied on the Mac goes to the client, text from the client is put on it.
+//! Files copied in Finder go to the client too ([`crate::outbox`]), and
+//! files from the client are put on it ([`crate::files`]).
 //!
 //! Runs where the pasteboard belongs: in the user's session (the agent, or
 //! `serve`), never at the login window. Only changes made during the
@@ -14,7 +16,9 @@ use std::time::Duration;
 use auroval_proto::{ClipboardEcho, MAX_CLIPBOARD};
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::ProtocolObject;
-use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString, NSPasteboardWriting};
+use objc2_app_kit::{
+    NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeString, NSPasteboardWriting,
+};
 use objc2_foundation::{NSArray, NSString, NSURL};
 
 /// How often the pasteboard is checked for a new copy. macOS has no change
@@ -29,12 +33,17 @@ pub struct Watcher {
 
 impl Watcher {
     /// Starts watching; `copied` gets every text copied on the Mac from now
-    /// on, up to [`MAX_CLIPBOARD`] bytes.
-    pub fn start(copied: impl Fn(String) + Send + 'static) -> Self {
+    /// on, up to [`MAX_CLIPBOARD`] bytes, and `files` the paths of every
+    /// copy of files (Finder's), instead of the file names Finder offers
+    /// as text alongside.
+    pub fn start(
+        copied: impl Fn(String) + Send + 'static,
+        files: impl Fn(Vec<PathBuf>) + Send + 'static,
+    ) -> Self {
         let (set, requests) = channel();
         let thread = std::thread::Builder::new()
             .name("pasteboard".into())
-            .spawn(move || watch(requests, copied))
+            .spawn(move || watch(requests, copied, files))
             .ok();
         Self { set, thread }
     }
@@ -72,7 +81,7 @@ enum Put {
     Stop,
 }
 
-fn watch(requests: Receiver<Put>, copied: impl Fn(String)) {
+fn watch(requests: Receiver<Put>, copied: impl Fn(String), files: impl Fn(Vec<PathBuf>)) {
     let board = NSPasteboard::generalPasteboard();
     let mut echo = ClipboardEcho::default();
     let mut seen = board.changeCount();
@@ -134,6 +143,17 @@ fn watch(requests: Receiver<Put>, copied: impl Fn(String)) {
             continue;
         }
         seen = now;
+        // Our own writes never get here (`seen` above), so files the
+        // client sent don't go back to it.
+        let paths = file_urls(&board);
+        if !paths.is_empty() {
+            println!(
+                "  clipboard → client ({} file(s) or folder(s))",
+                paths.len()
+            );
+            files(paths);
+            continue;
+        }
         let text = autoreleasepool(|_| {
             board
                 .stringForType(unsafe { NSPasteboardTypeString })
@@ -154,4 +174,22 @@ fn watch(requests: Receiver<Put>, copied: impl Fn(String)) {
             copied(text);
         }
     }
+}
+
+/// The local paths of the files on the pasteboard: one `public.file-url`
+/// per item, as Finder puts them there.
+fn file_urls(board: &NSPasteboard) -> Vec<PathBuf> {
+    autoreleasepool(|_| {
+        let Some(items) = board.pasteboardItems() else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| item.stringForType(unsafe { NSPasteboardTypeFileURL }))
+            .filter_map(|url| NSURL::URLWithString(&url))
+            .filter(|url| url.isFileURL())
+            .filter_map(|url| url.path())
+            .map(|p| PathBuf::from(p.to_string()))
+            .collect()
+    })
 }
