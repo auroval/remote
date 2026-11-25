@@ -631,11 +631,23 @@ async fn client(
         },
     ));
     let to = current.clone();
-    let input = tokio::spawn(session::read_input(conn.clone(), move |e| {
-        // At the login window macOS ignores these; sent anyway, harmless.
-        let _ = to.lock().unwrap().to.send(ToAgent::Input(e));
-        true
-    }));
+    // Files go to the agent of the moment; at the login window it has no
+    // clipboard and drops them.
+    let files = clipboard.then(|| {
+        let to = to.clone();
+        move |step| {
+            let _ = to.lock().unwrap().to.send(ToAgent::Files(step));
+        }
+    });
+    let input = tokio::spawn(session::read_input(
+        conn.clone(),
+        move |e| {
+            // At the login window macOS ignores these; sent anyway, harmless.
+            let _ = to.lock().unwrap().to.send(ToAgent::Input(e));
+            true
+        },
+        files,
+    ));
 
     let (frames_tx, mut frames) = mpsc::channel::<Result<VideoFrame, String>>(FRAME_QUEUE);
     let follow = tokio::spawn(follow_console(Following {

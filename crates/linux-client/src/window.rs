@@ -44,6 +44,8 @@ pub struct LinkView<'a> {
     pub retry: UnboundedSender<()>,
     /// Clipboard sync: our copies out, the Mac's in. `None` when off.
     pub clipboard: Option<(UnboundedSender<String>, Receiver<String>)>,
+    /// Files copied here, for the Mac. `None` without clipboard sync.
+    pub files: Option<UnboundedSender<crate::copies::FileCopy>>,
     /// The Mac's pointer shape and moves.
     pub pointer: Receiver<auroval_proto::HostControl>,
     /// Our size in pixels, for the host to size the picture to.
@@ -159,6 +161,10 @@ pub fn run(
     {
         echo.noted(&text);
     }
+    let mut copies = crate::copies::CopyEcho::default();
+    if link.files.is_some() {
+        copies.noted(crate::copies::on_clipboard());
+    }
     let default_cursor = Cursor::from_system(SystemCursor::Arrow).ok();
     let mut pointer = Pointer::default();
     // Grabbed: compositor shortcuts (Super+…) go to the Mac, and the pointer
@@ -267,6 +273,14 @@ pub fn run(
                 Event::ClipboardUpdate { .. } => {
                     if let Some((out, _)) = &link.clipboard {
                         copied_here(&clipboard, &mut echo, out);
+                    }
+                    // Files: a file manager's copy has no text.
+                    if let Some(out) = &link.files
+                        && !clipboard.has_clipboard_text()
+                        && let Some(copy) = crate::copies::on_clipboard()
+                        && copies.is_new(&copy)
+                    {
+                        let _ = out.send(copy);
                     }
                 }
                 // While disconnected the window is ours: Esc quits, Enter
@@ -696,7 +710,7 @@ fn texture_format(layout: Layout) -> PixelFormat {
 /// content is never logged, only its size.
 fn copied_here(clipboard: &ClipboardUtil, echo: &mut ClipboardEcho, out: &UnboundedSender<String>) {
     if !clipboard.has_clipboard_text() {
-        return; // an image or files: text only for now
+        return; // an image, or files (crate::copies)
     }
     let Ok(text) = clipboard.clipboard_text() else {
         return;

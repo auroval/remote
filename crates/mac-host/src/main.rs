@@ -34,6 +34,8 @@ mod dump;
 #[cfg(target_os = "macos")]
 mod encoder;
 #[cfg(target_os = "macos")]
+mod files;
+#[cfg(target_os = "macos")]
 mod indicator;
 #[cfg(target_os = "macos")]
 mod inject;
