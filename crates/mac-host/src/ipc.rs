@@ -62,6 +62,11 @@ pub enum ToAgent {
     /// Files the client copied, step by step, for this session's
     /// clipboard ([`crate::files`]).
     Files(Incoming),
+    /// One [`FromAgent::FilesOut`] chunk is on the network (or thrown
+    /// away): the agent may read one more ([`crate::outbox`]).
+    FilesOutWritten,
+    /// The client stopped the copy on its way (cancelled it).
+    FilesOutStopped,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -87,6 +92,11 @@ pub enum FromAgent {
     /// The client's copy of files is on the clipboard, or not and why
     /// ([`HostControl::FilesTaken`], [`HostControl::FilesRefused`]).
     Files(Result<(), String>),
+    /// Files copied on the Mac, step by step, for the client's clipboard
+    /// ([`crate::outbox`]). Sent behind everything else the agent has to
+    /// say, and at most [`crate::outbox::WINDOW`] chunks ahead of
+    /// [`ToAgent::FilesOutWritten`].
+    FilesOut(Incoming),
     /// A message for the client as it is (the pointer's shape and moves).
     Control(HostControl),
     /// Capture couldn't start or stopped; the session is over.
@@ -147,6 +157,8 @@ mod tests {
             ToAgent::Lock,
             ToAgent::Clipboard("copied".into()),
             ToAgent::Files(Incoming::Data(vec![1, 2, 3])),
+            ToAgent::FilesOutWritten,
+            ToAgent::FilesOutStopped,
         ];
         for m in &sent {
             write(&mut a, m).await.unwrap();

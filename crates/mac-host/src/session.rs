@@ -480,6 +480,71 @@ async fn receive_files(mut stream: quinn::RecvStream, pass: impl Fn(Incoming) + 
     guard.0 = None;
 }
 
+/// What became of a chunk of a copy for the client ([`send_files`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileSent {
+    /// Written to the stream, or thrown away: the reader may go on.
+    Written,
+    /// The client stopped the copy (cancelled it): stop reading it.
+    Stopped,
+}
+
+/// Writes the Mac's copies of files to the client, each on a
+/// unidirectional stream of its own ([`auroval_proto::files`]), below
+/// video, input and control. Each step comes with `R`, whom `answer` tells
+/// what became of it: every chunk is answered, so the reader never waits
+/// for one that went nowhere. Call only after the video stream is open:
+/// the client takes its first stream from the host for the video.
+pub async fn send_files<R>(
+    conn: quinn::Connection,
+    mut steps: UnboundedReceiver<(Incoming, R)>,
+    answer: impl Fn(&R, FileSent),
+) {
+    let mut stream: Option<quinn::SendStream> = None;
+    while let Some((step, from)) = steps.recv().await {
+        match step {
+            Incoming::Begin(offer) => {
+                if let Some(mut s) = stream.take() {
+                    let _ = s.reset(0u32.into());
+                }
+                let Ok(mut s) = conn.open_uni().await else {
+                    return; // the connection is gone
+                };
+                // Below video, input and control: a big copy mustn't hold
+                // them up (F4).
+                let _ = s.set_priority(-1);
+                match quic::send(&mut s, &offer).await {
+                    Ok(()) => stream = Some(s),
+                    Err(_) => answer(&from, FileSent::Stopped),
+                }
+            }
+            Incoming::Data(bytes) => {
+                if let Some(s) = &mut stream
+                    && s.write_all(&bytes).await.is_err()
+                {
+                    // Stopped by the client, or the connection is gone.
+                    stream = None;
+                    answer(&from, FileSent::Stopped);
+                }
+                answer(&from, FileSent::Written);
+            }
+            Incoming::End => {
+                if let Some(mut s) = stream.take() {
+                    let _ = s.finish();
+                }
+            }
+            Incoming::Abort(_) => {
+                if let Some(mut s) = stream.take() {
+                    let _ = s.reset(0u32.into());
+                }
+            }
+        }
+    }
+    if let Some(mut s) = stream {
+        let _ = s.reset(0u32.into());
+    }
+}
+
 /// Frames the daemon dropped because the client's queue was full (the
 /// network or the client is behind); reported in the "sent" line.
 pub static DROPPED_BEHIND: AtomicU64 = AtomicU64::new(0);

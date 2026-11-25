@@ -126,6 +126,24 @@ grep -q "connection lost: no answer from the Mac for 12 s" "$log/long.log" || fa
 grep -q "^reconnected" "$log/long.log" || fail "the client didn't reconnect after the outage: $(tail -3 "$log/long.log")"
 [ "$(grep -c '  video: ' "$log/host-long.log")" -ge 2 ] || fail "no second session after the outage"
 
+# Files from the Mac: a copy the host sends lands, whole, in the client's
+# cache folder (for the clipboard), and the folder is gone after the session.
+mkdir -p "$log/copy/folder/sub"
+head -c 3000000 /dev/urandom >"$log/copy/folder/big.bin"
+echo small >"$log/copy/folder/sub/small.txt"
+"$B/examples/fake_host" --port 4524 --pair-code 242424 --frames 150 --send-files "$log/copy/folder" >"$log/host-files.log" 2>&1 &
+files_host=$!
+sleep 1
+client n pair 127.0.0.1:4524 --code 242424 --name files >"$log/pair-files.log" 2>&1 || fail "pairing with the files host failed"
+XDG_CACHE_HOME="$log/n-cache" XDG_CONFIG_HOME="$log/n" timeout 20 "$B/auroval" files >"$log/files.log" 2>&1 &
+files_client=$!
+for _ in $(seq 40); do grep -q "from the Mac on the clipboard" "$log/files.log" && break; sleep 0.25; done
+grep -q "from the Mac on the clipboard" "$log/files.log" || fail "the host's copy didn't arrive: $(grep files "$log/files.log")"
+diff -r "$log/copy/folder" "$log"/n-cache/auroval-files/run-*/1/folder || fail "the host's copy arrived different"
+wait $files_client || true
+wait $files_host || true
+[ -z "$(ls -A "$log/n-cache/auroval-files")" ] || fail "copies left behind after the session: $(ls -R "$log/n-cache/auroval-files")"
+
 # Driving the window through the test hooks (a client built with
 # --features test-hooks): Right Ctrl releases the grab and shows the LOCAL
 # badge, a second one grabs again; a snapshot captures the window.
@@ -296,4 +314,4 @@ else
   narrow_ok=" (no NET_ADMIN: narrow-path check skipped)"
 fi
 
-echo "e2e OK: pairing (wrong code refused), $shown seconds of video (H.264), $hevc_shown (HEVC) and $hevc444_shown (HEVC 4:4:4), unpaired client and foreign host refused, reconnect after a host restart, outages ridden out (3 s) and reconnected after (15 s)${hooks_ok}, found on the LAN by name and after moving, recognised at an unknown address${narrow_ok}"
+echo "e2e OK: pairing (wrong code refused), $shown seconds of video (H.264), $hevc_shown (HEVC) and $hevc444_shown (HEVC 4:4:4), unpaired client and foreign host refused, reconnect after a host restart, outages ridden out (3 s) and reconnected after (15 s), a copy of files from the host received and cleaned up${hooks_ok}, found on the LAN by name and after moving, recognised at an unknown address${narrow_ok}"

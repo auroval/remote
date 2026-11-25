@@ -55,6 +55,8 @@ mod lock;
 mod menu;
 #[cfg(target_os = "macos")]
 mod mute;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod outbox;
 #[cfg(target_os = "macos")]
 mod output;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

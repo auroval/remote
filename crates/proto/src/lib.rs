@@ -78,7 +78,9 @@ pub enum Intent {
     /// session ([`ClientControl::Clipboard`], [`HostControl::Clipboard`]),
     /// and the client may send files it copied, each copy on a
     /// unidirectional stream of its own after the input stream
-    /// ([`files`]); without it the host sends none and takes none. `codecs`: the video formats the
+    /// ([`files`]); the host sends files the Mac copied the same way, on
+    /// unidirectional streams after the video stream. Without it the host
+    /// sends none and takes none. `codecs`: the video formats the
     /// client can decode, best first; the host takes the first it can send
     /// ([`Codec::pick`]) and names it in [`Welcome::codec`]. With `audio`
     /// the host sends the Mac's sound as [`AudioPacket`]s, where it can.
@@ -265,6 +267,10 @@ pub enum HostControl {
     /// (the screen is locked, the login window, a write failed). The client
     /// stops sending it.
     FilesRefused(String),
+    /// A copy of files on the Mac couldn't be sent to the client, and why
+    /// (macOS didn't let the host read it, too big, a read failed). Sent
+    /// instead of the copy's stream, or after it was reset.
+    FilesFailed(String),
 }
 
 /// A pointer shape, in the captured display's pixels (2× on a Retina Mac).
