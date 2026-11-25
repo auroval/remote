@@ -8,6 +8,7 @@ This file holds what both directions share. Each direction has its own PRD:
 |---|---|---|
 | **macOS host → Linux client** | [PRD-mac-host.md](PRD-mac-host.md) | Built: M0–M3 done, released as `0.1.0-alpha` (Homebrew casks). |
 | **Linux (Hyprland) host → macOS and Linux clients** | [PRD-linux-host.md](PRD-linux-host.md) | Proposed: a login screen and a session of its own, RDP-style. Spikes under way, no host built. |
+| *Across directions:* files between client and host | [PRD-file-transfer.md](PRD-file-transfer.md) | Proposed: copy and paste of files during a session, Mac host first. Nothing built. |
 
 They were one document until October 2026. The first direction got built, and the decisions it forced (no WebRTC, no AV1, no own authentication) changed enough that the old combined text no longer described either direction well.
 
