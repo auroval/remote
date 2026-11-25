@@ -28,6 +28,8 @@ sdl3 = "0.22"
 tokio.workspace = true
 ab_glyph = "0.2"
 mdns-sd = { version = "0.22", default-features = false }
+# The Flatpak's FileTransfer portal, for files copied in a file manager.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 # Reading back saved pictures (src/dump.rs).

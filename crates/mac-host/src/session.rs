@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
+use auroval_proto::files::{FileOffer, Incoming};
 use auroval_proto::trust::{Fingerprint, Role, start_pake};
 use auroval_proto::{
     AudioPacket, CLOSE_CODEC, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN,
@@ -383,16 +384,100 @@ pub async fn read_control(
 }
 
 /// Passes the client's input events to `event` until the stream ends or
-/// `event` returns false.
-pub async fn read_input(conn: quinn::Connection, mut event: impl FnMut(InputEvent) -> bool) {
+/// `event` returns false. The client's later unidirectional streams are
+/// copies of files ([`auroval_proto::files`]): with `files`, each is read
+/// on a task of its own and passed on step by step; without, refused.
+pub async fn read_input(
+    conn: quinn::Connection,
+    mut event: impl FnMut(InputEvent) -> bool,
+    files: Option<impl Fn(Incoming) + Clone + Send + Sync + 'static>,
+) {
     let Ok(mut stream) = conn.accept_uni().await else {
         return;
     };
+    let copies = tokio::spawn(async move {
+        // One copy at a time: a new one replaces the one still coming in.
+        let mut current: Option<tokio::task::JoinHandle<()>> = None;
+        while let Ok(mut copy) = conn.accept_uni().await {
+            if let Some(t) = current.take() {
+                t.abort();
+            }
+            match &files {
+                Some(pass) => current = Some(tokio::spawn(receive_files(copy, pass.clone()))),
+                None => {
+                    let _ = copy.stop(0u32.into());
+                }
+            }
+        }
+        if let Some(t) = current {
+            t.abort();
+        }
+    });
     while let Ok(Some(e)) = quic::recv::<InputEvent>(&mut stream).await {
         if !event(e) {
             break;
         }
     }
+    copies.abort();
+}
+
+/// Biggest piece of a copy passed on at once.
+const FILE_CHUNK: usize = 256 * 1024;
+
+/// Reads one copy of files: its offer, then its bytes, passed to `pass` as
+/// [`Incoming`] steps. A broken or cancelled stream ends in
+/// [`Incoming::Abort`], and so does this task being aborted.
+async fn receive_files(mut stream: quinn::RecvStream, pass: impl Fn(Incoming) + Send + Sync) {
+    struct AbortOnDrop<F: Fn(Incoming)>(Option<F>);
+    impl<F: Fn(Incoming)> Drop for AbortOnDrop<F> {
+        fn drop(&mut self) {
+            if let Some(pass) = self.0.take() {
+                pass(Incoming::Abort("stopped".into()));
+            }
+        }
+    }
+    let offer: FileOffer = match quic::recv(&mut stream).await {
+        Ok(Some(offer)) => offer,
+        Ok(None) => return,
+        Err(e) => {
+            eprintln!("  files: unreadable copy from the client: {e}");
+            return;
+        }
+    };
+    if let Err(why) = offer.check() {
+        eprintln!("  files: refused the client's copy: {why}");
+        let _ = stream.stop(0u32.into());
+        return;
+    }
+    let total = offer.total_bytes();
+    pass(Incoming::Begin(offer));
+    let guard = AbortOnDrop(Some(pass));
+    let pass = guard.0.as_ref().expect("set above");
+    let mut got = 0u64;
+    loop {
+        match stream.read_chunk(FILE_CHUNK, true).await {
+            Ok(Some(chunk)) => {
+                got += chunk.bytes.len() as u64;
+                if got > total {
+                    pass(Incoming::Abort("more bytes than offered".into()));
+                    let _ = stream.stop(0u32.into());
+                    break;
+                }
+                pass(Incoming::Data(chunk.bytes.to_vec()));
+            }
+            Ok(None) => {
+                pass(Incoming::End);
+                break;
+            }
+            Err(e) => {
+                pass(Incoming::Abort(e.to_string()));
+                break;
+            }
+        }
+    }
+    // Ended one way or the other: nothing more to say on drop.
+    let mut guard = guard;
+    guard.0 = None;
 }
 
 /// Frames the daemon dropped because the client's queue was full (the

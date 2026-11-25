@@ -247,6 +247,7 @@ async fn client(
             let _ = notices.send(msg);
         })
     });
+    let file_notices = notices.clone();
     let pasteboard = clipboard.then(|| {
         Arc::new(pasteboard::Watcher::start(move |text| {
             let _ = notices.send(HostControl::Clipboard(text));
@@ -296,9 +297,20 @@ async fn client(
     // The client plays it now; two speakers would echo.
     let muted = sound.as_ref().and_then(|_| crate::mute::mute());
     let injector = stream::spawn_injector(display.id, last_move);
-    let input = tokio::spawn(session::read_input(conn.clone(), move |e| {
-        injector.send(e).is_ok()
-    }));
+    let inbox = pasteboard.as_deref().map(|p| {
+        Arc::new(crate::agent::inbox(p, move |r| {
+            let _ = file_notices.send(match r {
+                Ok(()) => HostControl::FilesTaken,
+                Err(why) => HostControl::FilesRefused(why),
+            });
+        }))
+    });
+    let files = inbox.clone().map(|inbox| move |step| inbox.handle(step));
+    let input = tokio::spawn(session::read_input(
+        conn.clone(),
+        move |e| injector.send(e).is_ok(),
+        files,
+    ));
     let sending = session::send_frames(conn, &mut video, &mut frames, None);
     // The client's window changed: capture at the size that fits it. The
     // new stream starts first; if it can't, the old one goes on.

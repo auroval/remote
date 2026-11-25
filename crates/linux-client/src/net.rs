@@ -90,6 +90,8 @@ pub struct Link {
     /// Clipboard sync, when asked for: text copied here goes out on the
     /// sender, text the Mac copied comes in on the receiver.
     pub clipboard: Option<(UnboundedSender<String>, mpsc::Receiver<String>)>,
+    /// Files copied here, for the Mac's clipboard; with clipboard sync only.
+    pub files: Option<UnboundedSender<crate::copies::FileCopy>>,
     /// Our window's size in pixels, for the host to size the picture to.
     pub view: UnboundedSender<(u32, u32)>,
     /// Fit or match: how the Mac's display relates to our window.
@@ -180,6 +182,8 @@ struct Requests {
     quit: UnboundedReceiver<()>,
     /// Text copied here, for the Mac. Closed without clipboard sync.
     clipboard: UnboundedReceiver<String>,
+    /// Files copied here, for the Mac. Closed without clipboard sync.
+    files: UnboundedReceiver<crate::copies::FileCopy>,
     /// Our window's size in pixels, when it changed.
     view: UnboundedReceiver<(u32, u32)>,
     /// Fit or match, when the user switched.
@@ -262,6 +266,7 @@ async fn link(
     let (input, input_rx) = unbounded_channel();
     let (retry, retry_rx) = unbounded_channel();
     let (clipboard_out, clipboard_out_rx) = unbounded_channel();
+    let (files_out, files_out_rx) = unbounded_channel();
     let (view, view_rx) = unbounded_channel();
     let (display, display_rx) = unbounded_channel();
     let (clipboard_in_tx, clipboard_in) = mpsc::channel();
@@ -287,6 +292,7 @@ async fn link(
         retry: retry_rx,
         quit,
         clipboard: clipboard_out_rx,
+        files: files_out_rx,
         view: view_rx,
         display: display_rx,
         mic: mic_rx,
@@ -304,6 +310,7 @@ async fn link(
         ended: shared.ended.clone(),
         closer,
         clipboard: clipboard.then_some((clipboard_out, clipboard_in)),
+        files: clipboard.then_some(files_out),
         view,
         display,
         pointer,
@@ -835,6 +842,8 @@ impl Live {
                             let _ = c.send(text);
                         }
                     }
+                    HostControl::FilesTaken => crate::copies::answered(Ok(())),
+                    HostControl::FilesRefused(why) => crate::copies::answered(Err(why)),
                     msg @ (HostControl::CursorImage(_)
                     | HostControl::CursorShow(_)
                     | HostControl::CursorMoved { .. }
@@ -899,6 +908,7 @@ impl Live {
             let _ = quic::send(&mut ctl_send, &ClientControl::ViewSize { width, height }).await;
         }
         let mut ping = tokio::time::interval(PING_EVERY);
+        let mut sending_files: Option<tokio::task::JoinHandle<()>> = None;
         // Since when we hear nothing, while we do; when we last rebound.
         let mut outage: Option<(Instant, Instant)> = None;
         let video_end = loop {
@@ -927,6 +937,13 @@ impl Live {
                 }
                 Some(text) = requests.clipboard.recv() => {
                     let _ = quic::send(&mut ctl_send, &ClientControl::Clipboard(text)).await;
+                }
+                // A new copy replaces one still on its way.
+                Some(copy) = requests.files.recv() => {
+                    if let Some(t) = sending_files.take() {
+                        t.abort();
+                    }
+                    sending_files = Some(tokio::spawn(crate::copies::send(conn.clone(), copy)));
                 }
                 // Like the Mac's sound: what can't go now is dropped.
                 Some(packet) = requests.mic.recv() => {
@@ -977,6 +994,9 @@ impl Live {
                 }
             }
         };
+        if let Some(t) = sending_files {
+            t.abort();
+        }
         if matches!(video_end, VideoEnd::Finished) {
             // The stream can end just before the close reason arrives.
             let _ = tokio::time::timeout(Duration::from_millis(500), conn.closed()).await;

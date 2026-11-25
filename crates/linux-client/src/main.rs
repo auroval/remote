@@ -23,6 +23,8 @@ macro_rules! warn {
 #[cfg(target_os = "linux")]
 mod audio;
 #[cfg(target_os = "linux")]
+mod copies;
+#[cfg(target_os = "linux")]
 mod decoder;
 #[cfg(target_os = "linux")]
 mod discover;
@@ -566,6 +568,7 @@ fn run(
             last_heard: &link.last_heard,
             retry: link.retry.clone(),
             clipboard: link.clipboard,
+            files: link.files,
             pointer: link.pointer,
             view: link.view,
             display: window::DisplayChoice {

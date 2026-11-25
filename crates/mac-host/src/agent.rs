@@ -165,6 +165,8 @@ struct Active {
     inputs: u64,
     /// The session's clipboard, when the client asked for it.
     pasteboard: Option<pasteboard::Watcher>,
+    /// Writes the files the client copied, for the pasteboard.
+    files: Option<crate::files::Inbox>,
     /// Sends the pointer's shape, when the client draws it.
     _pointer: Option<cursor::Watcher>,
     /// The client's window in pixels, once it said.
@@ -585,6 +587,16 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                     p.set(text);
                 }
             }
+            ToAgent::Files(msg) => match active.as_ref().and_then(|a| a.files.as_ref()) {
+                Some(f) => f.handle(msg),
+                // The login window (or a session without clipboard).
+                None => {
+                    if matches!(msg, auroval_proto::files::Incoming::Begin(_)) {
+                        let why = "the Mac has no clipboard for it (login window)";
+                        let _ = out.send(FromAgent::Files(Err(why.into())));
+                    }
+                }
+            },
             ToAgent::Input(e) => {
                 if let Some(a) = &mut active {
                     if a.inputs == 0 {
@@ -669,6 +681,12 @@ fn start(
             let _ = out.send(FromAgent::Clipboard(text));
         })
     });
+    let files = pasteboard.as_ref().map(|p| {
+        let out = out.clone();
+        inbox(p, move |r| {
+            let _ = out.send(FromAgent::Files(r));
+        })
+    });
     // In a user session, with the device installed: the Mac plays to it and
     // the daemon sends that. The login window keeps capturing: its capture
     // failing is how a black picture there shows (see serve_daemon).
@@ -718,6 +736,7 @@ fn start(
         codec,
         inputs: 0,
         pasteboard,
+        files,
         _pointer: pointer,
         view,
         display_mode: DisplayMode::Fit,
@@ -725,6 +744,25 @@ fn start(
         rematch_at: None,
         shield: None,
     })
+}
+
+/// Takes the files the client copies onto `pasteboard`, while the screen
+/// is unlocked; `report` tells the client how each went.
+pub fn inbox(
+    pasteboard: &pasteboard::Watcher,
+    report: impl Fn(Result<(), String>) + Send + 'static,
+) -> crate::files::Inbox {
+    crate::files::Inbox::start(
+        pasteboard.files_putter(),
+        || {
+            if crate::curtain::screen_locked() {
+                Err("the Mac's screen is locked".into())
+            } else {
+                Ok(())
+            }
+        },
+        report,
+    )
 }
 
 /// Sends the pointer's shape and the Mac's moves of it, over `display`.

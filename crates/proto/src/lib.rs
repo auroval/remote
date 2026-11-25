@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 13;
+pub const PROTOCOL_VERSION: u16 = 14;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"auroval/1";
@@ -75,8 +75,10 @@ pub struct Hello {
 pub enum Intent {
     /// Start a session; the host answers with [`Welcome`] if this client is
     /// paired. With `clipboard`, both sides pass on text copied during the
-    /// session ([`ClientControl::Clipboard`], [`HostControl::Clipboard`]);
-    /// without it the host sends none. `codecs`: the video formats the
+    /// session ([`ClientControl::Clipboard`], [`HostControl::Clipboard`]),
+    /// and the client may send files it copied, each copy on a
+    /// unidirectional stream of its own after the input stream
+    /// ([`files`]); without it the host sends none and takes none. `codecs`: the video formats the
     /// client can decode, best first; the host takes the first it can send
     /// ([`Codec::pick`]) and names it in [`Welcome::codec`]. With `audio`
     /// the host sends the Mac's sound as [`AudioPacket`]s, where it can.
@@ -256,6 +258,12 @@ pub enum HostControl {
     /// The pointer is in the video again (e.g. the login window took over,
     /// where the shape can't be read): stop drawing it locally.
     CursorInVideo,
+    /// The client's latest copy of files is on the Mac's clipboard.
+    FilesTaken,
+    /// The Mac didn't take the client's latest copy of files, and why
+    /// (the screen is locked, the login window, a write failed). The client
+    /// stops sending it.
+    FilesRefused(String),
 }
 
 /// A pointer shape, in the captured display's pixels (2× on a Retina Mac).
@@ -458,6 +466,8 @@ pub fn decode<T: DeserializeOwned>(buf: &[u8]) -> Result<Option<(T, usize)>, Err
     };
     Ok(Some((decode_body(body)?, LEN_PREFIX + len)))
 }
+
+pub mod files;
 
 #[cfg(feature = "quic")]
 pub mod trust;

@@ -29,6 +29,9 @@ use crate::overlay::{Overlay, render_badge, render_card};
 use crate::pointer::{Change, Pointer};
 
 /// How long the "input → Mac" note shows after grabbing.
+/// How long after the window opens a clipboard change is still what was
+/// there before the session (see `settled` in [`run`]).
+const CLIPBOARD_SETTLE: Duration = Duration::from_secs(3);
 const TOAST: Duration = Duration::from_secs(2);
 
 /// No frames or pongs for this long while connected: say so. Pongs come
@@ -44,6 +47,8 @@ pub struct LinkView<'a> {
     pub retry: UnboundedSender<()>,
     /// Clipboard sync: our copies out, the Mac's in. `None` when off.
     pub clipboard: Option<(UnboundedSender<String>, Receiver<String>)>,
+    /// Files copied here, for the Mac. `None` without clipboard sync.
+    pub files: Option<UnboundedSender<crate::copies::FileCopy>>,
     /// The Mac's pointer shape and moves.
     pub pointer: Receiver<auroval_proto::HostControl>,
     /// Our size in pixels, for the host to size the picture to.
@@ -159,6 +164,14 @@ pub fn run(
     {
         echo.noted(&text);
     }
+    let mut copies = crate::copies::CopyEcho::default();
+    if link.files.is_some() {
+        copies.noted(crate::copies::on_clipboard());
+    }
+    // On Wayland the clipboard only reaches a window with focus: what's on
+    // it already shows up as a change once ours gets focus. Changes this
+    // soon after the start are that, not copies made in the session.
+    let settled = Instant::now() + CLIPBOARD_SETTLE;
     let default_cursor = Cursor::from_system(SystemCursor::Arrow).ok();
     let mut pointer = Pointer::default();
     // Grabbed: compositor shortcuts (Super+…) go to the Mac, and the pointer
@@ -264,9 +277,27 @@ pub fn run(
                     forwarder.release_keys();
                     return Ok(());
                 }
+                Event::ClipboardUpdate { .. } if Instant::now() < settled => {
+                    if link.clipboard.is_some()
+                        && let Ok(text) = clipboard.clipboard_text()
+                    {
+                        echo.noted(&text);
+                    }
+                    if link.files.is_some() {
+                        copies.noted(crate::copies::on_clipboard());
+                    }
+                }
                 Event::ClipboardUpdate { .. } => {
                     if let Some((out, _)) = &link.clipboard {
                         copied_here(&clipboard, &mut echo, out);
+                    }
+                    // Files: a file manager's copy has no text.
+                    if let Some(out) = &link.files
+                        && !clipboard.has_clipboard_text()
+                        && let Some(copy) = crate::copies::on_clipboard()
+                        && copies.is_new(&copy)
+                    {
+                        let _ = out.send(copy);
                     }
                 }
                 // While disconnected the window is ours: Esc quits, Enter
@@ -441,6 +472,9 @@ pub fn run(
             at_login,
         );
         overlay.offer_display(display_mode);
+        if connected && let Some(badge) = crate::copies::notice() {
+            overlay.badges.insert(0, badge);
+        }
         // Redraw on a new picture, or when the overlay changed; while it
         // shows something that counts, a few times a second is plenty.
         let changed = drawn.as_ref() != Some(&overlay);
@@ -696,7 +730,7 @@ fn texture_format(layout: Layout) -> PixelFormat {
 /// content is never logged, only its size.
 fn copied_here(clipboard: &ClipboardUtil, echo: &mut ClipboardEcho, out: &UnboundedSender<String>) {
     if !clipboard.has_clipboard_text() {
-        return; // an image or files: text only for now
+        return; // an image, or files (crate::copies)
     }
     let Ok(text) = clipboard.clipboard_text() else {
         return;

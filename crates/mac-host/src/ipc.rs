@@ -6,6 +6,7 @@
 //! [`ToAgent::Start`]; frames flow back until [`ToAgent::Stop`].
 
 use anyhow::Context;
+use auroval_proto::files::Incoming;
 use auroval_proto::{AudioPacket, Codec, DisplayMode, HostControl, InputEvent, VideoFrame};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -15,7 +16,7 @@ pub const SOCKET: &str = "/var/run/auroval/agent.sock";
 
 /// Daemon and agent are one binary, installed together; a different build
 /// on the other end means a half-finished install.
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc12");
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc13");
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ToAgent {
@@ -58,6 +59,9 @@ pub enum ToAgent {
     Lock,
     /// Text the client copied, for this session's clipboard.
     Clipboard(String),
+    /// Files the client copied, step by step, for this session's
+    /// clipboard ([`crate::files`]).
+    Files(Incoming),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -80,6 +84,9 @@ pub enum FromAgent {
     SoundViaDevice,
     /// Text copied in this session, for the client.
     Clipboard(String),
+    /// The client's copy of files is on the clipboard, or not and why
+    /// ([`HostControl::FilesTaken`], [`HostControl::FilesRefused`]).
+    Files(Result<(), String>),
     /// A message for the client as it is (the pointer's shape and moves).
     Control(HostControl),
     /// Capture couldn't start or stopped; the session is over.
@@ -139,6 +146,7 @@ mod tests {
             ToAgent::Stop,
             ToAgent::Lock,
             ToAgent::Clipboard("copied".into()),
+            ToAgent::Files(Incoming::Data(vec![1, 2, 3])),
         ];
         for m in &sent {
             write(&mut a, m).await.unwrap();
