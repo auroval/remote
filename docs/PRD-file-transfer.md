@@ -7,7 +7,7 @@
 ## The decision this document is for
 
 1. **Drop the non-goal**, and build copy and paste of files during a session, in both directions.
-2. **What ships first:** Linux → Mac by copy and paste (P1), then Mac → Linux (P2). Dropping files on the window comes after that (P3). Dragging out of the window is not planned.
+2. **What ships first:** Linux → Mac by copy and paste (P1), then Mac → Linux (P2). Dropping files on the window comes after that (P3): they land where they were dropped on the Mac, in a Finder folder or a Slack channel, and nowhere if nothing there takes files. Dragging out of the window is not planned.
 3. **How the bytes travel:** on their own QUIC streams inside the existing session, never on the control stream and never through a second channel (ssh, SMB, a web server).
 
 ## Summary
@@ -56,6 +56,7 @@ Today the clipboard carries plain text only ([#23](https://github.com/auroval/re
 | A second channel (`scp` or SMB to the Mac, a web server on the client) | It needs its own authentication and open ports, next to the paired QUIC connection. That breaks principles 2 and 6 ([PRD.md](PRD.md#2-principles-both-directions)). |
 | A `--filesystem=home` permission for the Flatpak, instead of the portal | Every client install could then read the whole home directory. The portal gives access only to the files the user copied. Keep it as a fallback (see *What would change this plan*), not as the plan. |
 | A file-manager panel in the client | A second UI to build and keep up, when both desktops already have file managers (non-goals). |
+| A fixed folder on the Mac for dropped files (Downloads, Desktop) | The maintainer's call, November 2026. A drop should land where it was dropped, the way it does locally. When nothing under the pointer takes files, nothing happens. |
 
 ## Requirements
 
@@ -69,19 +70,19 @@ Priority words as in [PRD.md](PRD.md#4-priority-words).
 | F4 | Video and input stay as they are during a transfer. | Must | During a 1 GB transfer on the LAN, the median capture-to-screen latency (the client's per-stage split) rises by at most 10 ms, and no keystroke is lost. *Target, not measured.* |
 | F5 | Only what the user copied during this session, and only while the Mac is unlocked. | Must | Files copied before connecting are not offered. A paste while the Mac is locked or at the login window offers no files. A session started without the clipboard (`Intent::Connect { clipboard: false }`) moves no files. |
 | F6 | Progress shows, and a transfer can be cancelled. | Should | The overlay shows the name, bytes done and total while a transfer runs longer than a second. A cancel key stops it, and the paste then ends with an error instead of a half-written file. |
-| F7 | A big copy doesn't start by surprise. | Should | Above a limit (open question 2), the side that would send asks first: on the client in the overlay, on the Mac in the menu-bar item's notification. Below the limit there's no question. |
+| F7 | A big copy doesn't start by surprise. | Should | Above 500 MB in total, the side that would send asks first: on the client in the overlay, on the Mac in the menu-bar item's notification. At or below 500 MB there's no question. |
 | F8 | Nothing is left behind. | Must | After the session ends, no temporary copies remain on either machine (in the agent's temp directory, or the client's runtime or cache directory). Pasted files are real copies and stay. |
 | F9 | A clear message when it can't work. | Should | A file macOS doesn't let the agent read (privacy), or a path the Flatpak can't open, gives a named error in the overlay or the host log. It never gives a silent nothing, as today. |
-| F10 | Files dropped on the client window go to the Mac. | Could | Drop a file from Dolphin on the window: it arrives in a folder on the Mac (open question 3), and the menu-bar item says where. |
+| F10 | Files dropped on the client window land where they were dropped on the Mac. | Could | Drop a file from Dolphin on the window: over a Finder window it lands in that folder; over the desktop, on the Desktop; over a Slack channel, it's attached there as if dragged from Finder. Over something that takes no files, nothing happens, and no copy is left behind (F8). |
 
 ## Phasing
 
 | Phase | What | Useful on its own because | Answers for the next |
 |---|---|---|---|
-| **S** (spike) | Four questions, each settled by a small test: (a) does Finder paste file URLs that point at files in the agent's temp directory; (b) does it accept a promise from the general pasteboard; (c) does the Flatpak get paths from Dolphin through `RetrieveFiles`; (d) does reading a file Finder copied from Documents prompt for the agent. | It decides the design; nothing ships. | Whether files are copied **eagerly** at copy time or **lazily** at paste time (open question 1). |
+| **S** (spike) | Five questions, each settled by a small test: (a) does Finder paste file URLs that point at files in the agent's temp directory; (b) does it accept a promise from the general pasteboard; (c) does the Flatpak get paths from Dolphin through `RetrieveFiles`; (d) does reading a file Finder copied from Documents prompt for the agent; (e) can the agent drop files at a point on the Mac's screen, by starting a drag there and letting go, so the app under it gets an ordinary drop. | It decides the design; nothing ships. | Whether files are copied **eagerly** at copy time or **lazily** at paste time (open question 1), and whether F10 can be built at all. |
 | **P1** | Linux → Mac: F1, F3 (that direction), F4, F5, F8, F9. | Covers the case that started this (Dolphin → Finder). | How fast it is in practice, and the limit for F7. |
 | **P2** | Mac → Linux: F2, F3 (that direction), F6, F7. | Both directions. | Whether drops (F10) are still wanted. |
-| **P3** | F10, drops on the window. | One gesture instead of two. | — |
+| **P3** | F10, drops on the window, where spike e allows. | One gesture instead of two, straight into the app that needs the file. | — |
 
 ## Success metrics
 
@@ -91,14 +92,15 @@ Priority words as in [PRD.md](PRD.md#4-priority-words).
 
 ## Open questions
 
+Settled by the maintainer in November 2026: the limit for F7 is 500 MB, and a drop lands where it was dropped, or nowhere (F10).
+
 1. **Eager or lazy.** *Eager:* copying sends the files at once. Then the paste is instant, but every file copy during a session moves bytes, even when the user never pastes on the other side. *Lazy:* the paste fetches them. That's cheaper, but it needs Finder to wait on a promise (spike b), and it needs SDL's clipboard callback to block on the network while the other app waits. The current lean is lazy where the platform allows, eager with a limit where it doesn't. *Owner: the developer; settled by spike S.*
-2. **The size limit for F7.** A proposal: ask first above 500 MB in total. *Owner: the maintainer.*
-3. **Where dropped files go on the Mac (F10).** Downloads, the Desktop, or a folder of its own, `~/Downloads/Auroval`. *Owner: the maintainer; only needed for P3.*
-4. **What Finder's copy offers as text today.** Copying a file in Finder may also put its name on the pasteboard as text, which the agent would then send to the client as text. Not checked. *Owner: the developer, during spike S.*
+2. **What Finder's copy offers as text today.** Copying a file in Finder may also put its name on the pasteboard as text, which the agent would then send to the client as text. Not checked. *Owner: the developer, during spike S.*
 
 ## What would change this plan
 
 - **Finder doesn't paste file URLs from another process's temp directory** (spike a fails). Then the files have to go to a folder the user can see first, such as Downloads, and the paste becomes "a copy has arrived there". That's closer to F10 than to copy and paste.
 - **Qt's clipboard doesn't hand files to a Flatpak through the portal** (spike c fails). Then F3 needs `--filesystem=home:ro` (ruled out above) or waits for a fix upstream. The native client would work in the meantime.
 - **macOS prompts for every file the agent reads** (spike d). Then Mac → Linux needs the user to give the agent Full Disk Access once. That's a heavy request for a remote-desktop host, and would push P2 back.
+- **The agent can't drop files at a point on the Mac's screen** (spike e). Then F10 is dropped. It doesn't fall back to a fixed folder (ruled out above), and copy and paste stays the way.
 - **QUIC stream priorities can't keep video smooth during a transfer** (F4 fails). Then transfers need a bandwidth cap of their own, below what the video leaves free.
