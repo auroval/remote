@@ -11,9 +11,10 @@
 //! (entering or leaving full screen, cmd+tab). Gamma is applied on the way
 //! to the panel, after the capture, so the client still sees the picture.
 //! The cover windows only go up when a display can't be blacked out: they
-//! end up in screenshots taken during the session (the gamma doesn't), and
-//! after a display change macOS may light a display again for up to
-//! [`RECHECK`] before the blackout puts it back.
+//! end up in screenshots taken during the session (the gamma doesn't).
+//! macOS puts the tables back when a display changes (a new resolution, a
+//! display plugged in): a reconfiguration callback blacks the display out
+//! again the moment the change is done, instead of at the next [`RECHECK`].
 //!
 //! Local input is held back by a session event tap that drops every event
 //! not posted by our injector, which marks its events
@@ -28,6 +29,7 @@
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
@@ -90,9 +92,32 @@ impl Cover {
         Self { windows, frames }
     }
 
+    /// Covers for a display mode change: each a display's frame grown by
+    /// its own size on every side, so it still covers the display when the
+    /// new mode makes it larger in points.
+    pub fn wide(mtm: MainThreadMarker, level: isize) -> Self {
+        let frames = screen_frames(mtm);
+        let windows = frames
+            .iter()
+            .map(|f| {
+                let (w, h) = (f.size.width, f.size.height);
+                let grown =
+                    crate::indicator::rect(f.origin.x - w, f.origin.y - h, 3.0 * w, 3.0 * h);
+                cover_window(mtm, grown, level)
+            })
+            .collect();
+        Self { windows, frames }
+    }
+
     pub fn show(&self) {
         for w in &self.windows {
             w.orderFrontRegardless();
+        }
+    }
+
+    pub fn hide(&self) {
+        for w in &self.windows {
+            w.orderOut(None);
         }
     }
 
@@ -149,10 +174,37 @@ fn cover_window(mtm: MainThreadMarker, frame: NSRect, level: isize) -> Retained<
 /// that changed them exits).
 pub struct Blackout {
     checked: Instant,
+    /// Until then, [`Blackout::enforce`] looks on every turn: a display just
+    /// changed, and macOS may put a table back a moment after it said so.
+    closely_until: Instant,
 }
 
 /// How often [`Blackout::enforce`] looks whether macOS reset a table.
 const RECHECK: Duration = Duration::from_millis(200);
+/// How long after a display change it looks on every turn.
+const CLOSELY_FOR: Duration = Duration::from_secs(2);
+
+/// Set by [`reconfigured`]: a display changed since the last look.
+static CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// `kCGDisplayBeginConfigurationFlag`: the change is about to start.
+const BEGIN_CONFIGURATION: u32 = 1 << 0;
+
+/// Called by the window server on the main run loop, for changes made by any
+/// process (the agent switching the resolution for `match`, a display
+/// plugged in). By the time the change is done macOS has put the display's
+/// own table back, so it goes black again here, right away.
+unsafe extern "C-unwind" fn reconfigured(display: DisplayId, flags: u32, _info: *mut c_void) {
+    if flags & BEGIN_CONFIGURATION != 0 {
+        return;
+    }
+    CHANGED.store(true, Ordering::Relaxed);
+    if !is_black(display)
+        && let Err(e) = black(display)
+    {
+        eprintln!("curtain: display {display} not blacked out after a change: {e}");
+    }
+}
 
 impl Blackout {
     /// Also says whether every display went black.
@@ -165,8 +217,18 @@ impl Blackout {
                 all = false;
             }
         }
+        let err =
+            unsafe { CGDisplayRegisterReconfigurationCallback(reconfigured, std::ptr::null_mut()) };
+        if err != 0 {
+            eprintln!(
+                "curtain: no display change callback (error {err}), checking every {} ms",
+                RECHECK.as_millis()
+            );
+        }
+        let now = Instant::now();
         let blackout = Self {
-            checked: Instant::now(),
+            checked: now,
+            closely_until: now,
         };
         (blackout, all)
     }
@@ -175,10 +237,17 @@ impl Blackout {
     /// put back (it does after display changes). Cheap enough to call every
     /// turn of the run loop; does the work every [`RECHECK`].
     pub fn enforce(&mut self) {
-        if self.checked.elapsed() < RECHECK {
+        let now = Instant::now();
+        if CHANGED.swap(false, Ordering::Relaxed) {
+            self.closely_until = now + CLOSELY_FOR;
+        }
+        if now < self.closely_until {
+            // Every turn, quietly: the callback already blacked it out, this
+            // catches a table put back after it.
+        } else if self.checked.elapsed() < RECHECK {
             return;
         }
-        self.checked = Instant::now();
+        self.checked = now;
         for d in online_displays() {
             if !is_black(d) {
                 eprintln!("curtain: display {d} lit again, blacking it out");
@@ -192,7 +261,10 @@ impl Blackout {
 
 impl Drop for Blackout {
     fn drop(&mut self) {
-        unsafe { CGDisplayRestoreColorSyncSettings() };
+        unsafe {
+            CGDisplayRemoveReconfigurationCallback(reconfigured, std::ptr::null_mut());
+            CGDisplayRestoreColorSyncSettings();
+        }
     }
 }
 
@@ -218,6 +290,14 @@ unsafe extern "C" {
         count: *mut u32,
     ) -> i32;
     fn CGDisplayRestoreColorSyncSettings();
+    fn CGDisplayRegisterReconfigurationCallback(
+        callback: unsafe extern "C-unwind" fn(DisplayId, u32, *mut c_void),
+        info: *mut c_void,
+    ) -> i32;
+    fn CGDisplayRemoveReconfigurationCallback(
+        callback: unsafe extern "C-unwind" fn(DisplayId, u32, *mut c_void),
+        info: *mut c_void,
+    ) -> i32;
 }
 
 fn online_displays() -> Vec<DisplayId> {

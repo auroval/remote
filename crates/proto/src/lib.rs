@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 13;
+pub const PROTOCOL_VERSION: u16 = 14;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"auroval/1";
@@ -173,6 +173,40 @@ pub enum ClientControl {
     /// password there through macOS Screen Sharing, and answers with
     /// [`HostControl::LogIn`].
     LogIn(Credentials),
+    /// How the Mac's display relates to the window ([`DisplayMode`]). Sent
+    /// after [`Welcome`] and when the user switches; a session starts at
+    /// [`DisplayMode::Fit`].
+    Display(DisplayMode),
+}
+
+/// How the Mac's display relates to the client's window.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisplayMode {
+    /// The whole display, scaled to fit the window. The Mac doesn't change.
+    #[default]
+    Fit,
+    /// The Mac switches its display to the mode that best fits the window,
+    /// follows resizes, and goes back to its own mode when the session ends.
+    /// Rearranges windows and desktop icons on the Mac. Only in a user
+    /// session (also when locked); the login window stays at `Fit`.
+    Match,
+}
+
+impl DisplayMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            DisplayMode::Fit => "fit",
+            DisplayMode::Match => "match",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim() {
+            "fit" => Some(DisplayMode::Fit),
+            "match" => Some(DisplayMode::Match),
+            _ => None,
+        }
+    }
 }
 
 /// A Mac account name and its password, for [`ClientControl::LogIn`]. Wiped
@@ -237,7 +271,8 @@ pub fn picture_size(display: (u32, u32), view: Option<(u32, u32)>) -> (u32, u32)
     const MIN_WIDTH: f64 = 640.0;
     let scale = (vw as f64 / dw)
         .min(vh as f64 / dh)
-        .clamp(MIN_WIDTH / dw, 1.0);
+        // A display narrower than that itself: as it is.
+        .clamp((MIN_WIDTH / dw).min(1.0), 1.0);
     let even = |v: f64| ((v.round() as u32) & !1).max(2);
     (even(dw * scale), even(dh * scale))
 }
@@ -532,7 +567,62 @@ pub mod quic {
         // allowed, so on a narrow path everything after the handshake would
         // be lost (see `endpoint`). Single datagrams fragment fine.
         t.enable_segmentation_offload(false);
+        if let Some(cc) = congestion_from_env() {
+            t.congestion_controller_factory(cc);
+        }
         Arc::new(t)
+    }
+
+    /// `AUROVAL_QUIC_CC=cubic|newreno|bbr[:INITIAL_WINDOW_BYTES]`: an
+    /// experiment for #109, on the side that sends (the host, for video).
+    /// Unset: quinn's default (Cubic, its own initial window).
+    pub const CC_ENV: &str = "AUROVAL_QUIC_CC";
+
+    fn congestion_from_env()
+    -> Option<Arc<dyn quinn::congestion::ControllerFactory + Send + Sync + 'static>> {
+        let v = std::env::var(CC_ENV).ok()?;
+        let cc = parse_congestion(&v);
+        // Once per process: every endpoint builds its transport here.
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| match &cc {
+            Some(_) => eprintln!("quic: congestion control {v} ({CC_ENV})"),
+            None => eprintln!("{CC_ENV}={v}: not cubic, newreno or bbr[:bytes]; ignored"),
+        });
+        cc
+    }
+
+    fn parse_congestion(
+        v: &str,
+    ) -> Option<Arc<dyn quinn::congestion::ControllerFactory + Send + Sync + 'static>> {
+        use quinn::congestion::{BbrConfig, CubicConfig, NewRenoConfig};
+        let (name, window) = match v.trim().split_once(':') {
+            Some((name, w)) => (name, Some(w.trim().parse::<u64>().ok()?)),
+            None => (v.trim(), None),
+        };
+        Some(match name.to_ascii_lowercase().as_str() {
+            "cubic" => {
+                let mut c = CubicConfig::default();
+                if let Some(w) = window {
+                    c.initial_window(w);
+                }
+                Arc::new(c)
+            }
+            "newreno" => {
+                let mut c = NewRenoConfig::default();
+                if let Some(w) = window {
+                    c.initial_window(w);
+                }
+                Arc::new(c)
+            }
+            "bbr" => {
+                let mut c = BbrConfig::default();
+                if let Some(w) = window {
+                    c.initial_window(w);
+                }
+                Arc::new(c)
+            }
+            _ => return None,
+        })
     }
 
     /// A listening endpoint with this host's certificate. Every client must
@@ -868,6 +958,21 @@ pub mod quic {
         zeroize::Zeroize::zeroize(&mut body);
         Ok(Some(msg?))
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::parse_congestion;
+
+        #[test]
+        fn congestion_switch() {
+            for ok in ["cubic", "NewReno", " bbr ", "bbr:100000", "cubic: 64000"] {
+                assert!(parse_congestion(ok).is_some(), "{ok}");
+            }
+            for bad in ["", "vegas", "bbr:lots", "cubic:"] {
+                assert!(parse_congestion(bad).is_none(), "{bad}");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -891,8 +996,21 @@ mod tests {
         assert_eq!(picture_size(mac, Some((7680, 4320))), (3456, 2234));
         // A tiny window: not below 640 wide.
         assert_eq!(picture_size(mac, Some((200, 100))).0, 640);
+        // A display narrower than the minimum stays as it is (the fake host
+        // in match makes one the size of a small window).
+        assert_eq!(picture_size((500, 900), Some((500, 900))), (500, 900));
+        assert_eq!(picture_size((500, 900), Some((250, 450))), (500, 900));
         let (w, h) = picture_size(mac, Some((1279, 801)));
         assert!(w % 2 == 0 && h % 2 == 0 && w <= 1279 && h <= 801, "{w}x{h}");
+    }
+
+    #[test]
+    fn display_modes_have_names() {
+        for m in [DisplayMode::Fit, DisplayMode::Match] {
+            assert_eq!(DisplayMode::parse(m.name()), Some(m));
+        }
+        assert_eq!(DisplayMode::parse("stretch"), None);
+        assert_eq!(DisplayMode::default(), DisplayMode::Fit);
     }
 
     #[test]
@@ -954,6 +1072,7 @@ mod tests {
             width: 2560,
             height: 1400,
         });
+        roundtrip(ClientControl::Display(DisplayMode::Match));
         roundtrip(HostControl::Clipboard(String::new()));
         roundtrip(HostControl::CursorImage(CursorImage {
             id: 7,

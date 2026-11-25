@@ -57,6 +57,7 @@ mod trust;
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
 usage: auroval [HOST] [--no-clipboard] [--no-audio] [--no-mic] [--video FORMAT] [--host-key KEY]
+               [--display fit|match]
        auroval pair [MAC] [--name NAME] [--code CODE]
        auroval hosts
        auroval unpair HOST
@@ -77,6 +78,13 @@ usage: auroval [HOST] [--no-clipboard] [--no-audio] [--no-mic] [--video FORMAT] 
            --host-key sets the key that releases (and grabs) keyboard and
            mouse: an SDL key name such as RightCtrl (default), RightAlt,
            ScrollLock, Pause or F13 (default: $AUROVAL_HOST_KEY).
+           --display fit shows the Mac's whole display scaled to the window
+           (default); --display match switches the Mac's display to the
+           resolution that best fits the window, so small text stays sharp,
+           and back when you disconnect. Changing the resolution rearranges
+           windows and desktop icons on the Mac. Only in a logged-in session
+           and with the installed host. D switches while input is local;
+           the choice is remembered per Mac.
   pair     pair with a Mac: the only one found on the LAN, or MAC, its name
            as found on the LAN, an IP or a hostname (port defaults to 4500).
            First open pairing on the Mac: scripts/mac.zsh pair. It shows a
@@ -94,6 +102,7 @@ enum Command {
         mic: bool,
         video: Option<auroval_proto::Codec>,
         host_key: Option<String>,
+        display: Option<auroval_proto::DisplayMode>,
     },
     Pair {
         address: Option<String>,
@@ -123,6 +132,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
     let mut no_mic = false;
     let mut video = None;
     let mut host_key = None;
+    let mut display = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -135,6 +145,13 @@ fn parse(args: &[String]) -> Result<Command, String> {
             "--mic" => {}
             "--host-key" => {
                 host_key = Some(it.next().ok_or("--host-key needs a key name")?.clone());
+            }
+            "--display" => {
+                let name = it.next().ok_or("--display needs fit or match")?;
+                display = Some(
+                    auroval_proto::DisplayMode::parse(name)
+                        .ok_or(format!("unknown display mode {name:?}: fit or match"))?,
+                );
             }
             "--video" => {
                 let name = it
@@ -177,10 +194,16 @@ fn parse(args: &[String]) -> Result<Command, String> {
         Ok(())
     };
     let not_connecting = |cmd: &str| -> Result<(), String> {
-        if no_clipboard || no_audio || no_mic || video.is_some() || host_key.is_some() {
+        if no_clipboard
+            || no_audio
+            || no_mic
+            || video.is_some()
+            || host_key.is_some()
+            || display.is_some()
+        {
             return Err(format!(
-                "--no-clipboard, --no-audio, --no-mic, --video and --host-key are for \
-                 connecting, not {cmd}"
+                "--no-clipboard, --no-audio, --no-mic, --video, --host-key and --display are \
+                 for connecting, not {cmd}"
             ));
         }
         Ok(())
@@ -222,6 +245,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
                 mic: !no_mic,
                 video,
                 host_key: host_key.clone(),
+                display,
             })
         }
         None => {
@@ -234,6 +258,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
                 mic: !no_mic,
                 video,
                 host_key: host_key.clone(),
+                display,
             })
         }
     }
@@ -318,6 +343,7 @@ fn execute(command: Command) -> anyhow::Result<()> {
             mic,
             video,
             host_key,
+            display,
         } => {
             if let Some(v) = video {
                 decoder::prefer(v);
@@ -344,7 +370,16 @@ fn execute(command: Command) -> anyhow::Result<()> {
                 }
                 (Err(e), _) => return Err(anyhow!(e)),
             };
-            run(host, id, store, clipboard, audio, mic)
+            // The option wins, and is remembered like a switch in the window.
+            if let Some(mode) = display {
+                store
+                    .set_display_mode(&host.fingerprint, mode)
+                    .unwrap_or_else(|e| eprintln!("not remembering --display: {e}"));
+            }
+            let display = display
+                .or_else(|| store.display_mode(&host.fingerprint))
+                .unwrap_or_default();
+            run(host, id, clipboard, audio, mic, display, &store)
         }
         Command::Pair {
             address,
@@ -440,10 +475,11 @@ fn execute(command: Command) -> anyhow::Result<()> {
 fn run(
     host: trust::Host,
     id: auroval_proto::trust::Identity,
-    store: trust::Store,
     clipboard: bool,
     audio: bool,
     mic: bool,
+    display: auroval_proto::DisplayMode,
+    store: &trust::Store,
 ) -> anyhow::Result<()> {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -462,9 +498,11 @@ fn run(
     // closure remembers it (never the password) when the user logs in (#72).
     let fingerprint = host.fingerprint;
     let login_account = store.remembered_account(&fingerprint);
-    let remember_account: Box<dyn Fn(&str)> =
-        Box::new(move |name| store.remember_account(&fingerprint, name));
     let link = net::connect(host, id, clipboard, audio, mic)?;
+    if display != auroval_proto::DisplayMode::Fit {
+        say!("display: {}", display.name());
+    }
+    let _ = link.display.send(display);
     let welcome = link.welcome.clone();
     say!(
         "connected: remote display {}x{} px, {}",
@@ -499,10 +537,10 @@ fn run(
             let mut last_request = None::<Instant>;
             for (frame, mut timing) in frames {
                 timing.pts = frame.pts_us as i64;
-                counted.received(timing.pts, timing.received);
+                counted.received(&frame.timing, timing.pts, timing.received);
                 timing.decode_start = latency::now_us();
                 let result = decoder.decode(&frame, timing, |p| {
-                    counted.decoded();
+                    counted.decoded(p.timing.decoded);
                     if let Err(mpsc::TrySendError::Full(_)) = pictures_tx.try_send(p) {
                         counted.queue_full();
                     }
@@ -533,11 +571,20 @@ fn run(
             clipboard: link.clipboard,
             pointer: link.pointer,
             view: link.view,
+            display: window::DisplayChoice {
+                mode: display,
+                send: link.display,
+                remember: &|mode| {
+                    if let Err(e) = store.set_display_mode(&fingerprint, mode) {
+                        warn!("not remembering the display mode: {e}");
+                    }
+                },
+            },
             audio: link.audio,
             mic: link.mic,
             login: link.login,
             login_account,
-            remember_account,
+            remember_account: &|name| store.remember_account(&fingerprint, name),
         },
     );
     // Say goodbye, so the host knows we left on purpose (and locks the Mac

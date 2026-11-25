@@ -20,7 +20,7 @@ use std::time::Duration;
 use anyhow::{Context, anyhow, bail};
 use auroval_proto::trust::Identity;
 use auroval_proto::{
-    AudioPacket, Codec, Credentials, HostControl, LoginResult, SessionKind, VideoFrame,
+    AudioPacket, Codec, Credentials, DisplayMode, HostControl, LoginResult, SessionKind, VideoFrame,
 };
 use auroval_proto::{CLOSE_LINK_LOST, CLOSE_NO_AGENT, CLOSE_NO_PERMISSION};
 use auroval_proto::{discovery, quic};
@@ -446,8 +446,17 @@ async fn agent_connection(id: u64, stream: UnixStream, agents: &Agents) -> anyho
 
 /// Stops the agent's capture when the client stops using it: at a session
 /// switch or when the client leaves, however it leaves.
-/// The client's window size in pixels, once it said.
-type View = Arc<Mutex<Option<(u32, u32)>>>;
+/// What the client said about its window, as last said; a new agent
+/// starts there.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ClientView {
+    /// The window's size in pixels, once it said.
+    size: Option<(u32, u32)>,
+    /// Whether the Mac's display follows it.
+    display: DisplayMode,
+}
+
+type View = Arc<Mutex<ClientView>>;
 
 struct InUse(Arc<Agent>);
 
@@ -478,6 +487,8 @@ fn attach(
     *agent.client.lock().unwrap() = Some(tx.clone());
     *agent.sound.lock().unwrap() = sound.cloned();
     let in_use = InUse(agent.clone());
+    // One lock, copied out: two in the literal below would deadlock.
+    let shown = *view.lock().unwrap();
     agent
         .to
         .send(ToAgent::Start {
@@ -486,7 +497,8 @@ fn attach(
             in_flight: s.in_flight as u32,
             clipboard,
             codec,
-            view: *view.lock().unwrap(),
+            view: shown.size,
+            display: shown.display,
             audio: sound.is_some(),
             client: client.into(),
             speaker: agent.speaker.is_some(),
@@ -697,7 +709,7 @@ async fn client(
             let view = view.clone();
             let to = to.clone();
             move |width, height| {
-                *view.lock().unwrap() = Some((width, height));
+                view.lock().unwrap().size = Some((width, height));
                 let _ = to.lock().unwrap().to.send(ToAgent::ViewSize(width, height));
             }
         },
@@ -723,6 +735,14 @@ async fn client(
                     println!("  login: {}", login_outcome(&result));
                     let _ = notices.send(HostControl::LogIn(result));
                 });
+            }
+        },
+        {
+            let view = view.clone();
+            move |mode| {
+                println!("  display: {}", mode.name());
+                view.lock().unwrap().display = mode;
+                let _ = to.lock().unwrap().to.send(ToAgent::Display(mode));
             }
         },
     ));
@@ -983,7 +1003,10 @@ mod tests {
     fn connect(agents: &Agents) -> Session {
         let agent = agents.for_console().expect("no agent for the console");
         let (tx, rx) = mpsc::channel(FRAME_QUEUE);
-        let view: View = Arc::new(Mutex::new(Some((800, 600))));
+        let view: View = Arc::new(Mutex::new(ClientView {
+            size: Some((800, 600)),
+            display: DisplayMode::Fit,
+        }));
         let in_use = attach(
             &agent,
             &tx,
@@ -1037,11 +1060,12 @@ mod tests {
         }
     }
 
-    /// The `Start` an agent gets; returns the view size it carries.
-    async fn started(rx: &mut mpsc::UnboundedReceiver<ToAgent>) -> Option<(u32, u32)> {
+    /// The `Start` an agent gets; returns the window it carries.
+    async fn started(rx: &mut mpsc::UnboundedReceiver<ToAgent>) -> ClientView {
         match within(rx.recv()).await {
             Some(ToAgent::Start {
                 view,
+                display,
                 codec,
                 clipboard,
                 audio,
@@ -1050,7 +1074,10 @@ mod tests {
                 assert_eq!(codec, Codec::Hevc444);
                 assert!(clipboard);
                 assert!(!audio);
-                view
+                ClientView {
+                    size: view,
+                    display,
+                }
             }
             other => panic!("expected Start, got {other:?}"),
         }
@@ -1061,19 +1088,26 @@ mod tests {
         let (agents, console) = agents(USER);
         let (user, mut user_rx) = add(&agents, 1, USER);
         let mut s = connect(&agents);
-        assert_eq!(started(&mut user_rx).await, Some((800, 600)));
+        assert_eq!(started(&mut user_rx).await.size, Some((800, 600)));
         emit(&user, frame(1)).await;
         assert_eq!(s.next_frame().await, 1);
 
-        // The client's window changed size meanwhile: the next agent starts there.
-        *s.view.lock().unwrap() = Some((1024, 768));
+        // The client's window changed meanwhile: the next agent starts there.
+        *s.view.lock().unwrap() = ClientView {
+            size: Some((1024, 768)),
+            display: DisplayMode::Match,
+        };
         // Logout: the user's capture fails, then the login window's agent shows up.
         emit(&user, FromAgent::Failed("capture stopped".into())).await;
         console.store(LOGIN, Ordering::Relaxed);
         tokio::time::sleep(Duration::from_secs(2)).await;
         let (login, mut login_rx) = add(&agents, 2, LOGIN);
 
-        assert_eq!(started(&mut login_rx).await, Some((1024, 768)));
+        let login_view = started(&mut login_rx).await;
+        assert_eq!(login_view.size, Some((1024, 768)));
+        // The login window's agent leaves the display alone, but a user's
+        // agent after it needs to know.
+        assert_eq!(login_view.display, DisplayMode::Match);
         assert_eq!(within(user_rx.recv()).await, Some(ToAgent::Stop));
         assert_eq!(
             within(s.notices.recv()).await,

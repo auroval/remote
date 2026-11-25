@@ -18,10 +18,10 @@
 //! a client, takes it down without locking.
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
@@ -50,10 +50,69 @@ const LOCK_WAIT: Duration = Duration::from_secs(10);
 /// without them.
 const READY_WAIT: Duration = Duration::from_secs(3);
 
+/// How long [`Shield::cover`] waits for the covers to be up.
+const COVER_WAIT: Duration = Duration::from_secs(1);
+/// How long the covers stay after [`Shield::uncover`]: macOS may put a
+/// display's gamma table back a moment after the change is done, and the
+/// blackout needs a turn to make it black again.
+const UNCOVER_AFTER: Duration = Duration::from_secs(1);
+/// The covers come down by themselves after this, whatever happens.
+const COVER_AT_MOST: Duration = Duration::from_secs(10);
+
 /// The running helper; dropping it takes the indicator down.
 pub struct Indicator {
     /// Taken when dropped.
     child: Option<Child>,
+    shield: Shield,
+}
+
+/// Puts cover windows over the displays for a display mode change. The
+/// gamma blackout can only black a display out again after macOS put its
+/// table back, which it does during the change: for that moment the Mac's
+/// content showed. The covers go up before the change. They live in the
+/// helper, whose windows every capture leaves out.
+#[derive(Clone)]
+pub struct Shield {
+    /// The helper's stdin; `None` once the indicator is gone.
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    /// Lines from the helper's stdout.
+    said: Arc<Mutex<mpsc::Receiver<String>>>,
+}
+
+impl Shield {
+    fn tell(&self, line: &str) -> bool {
+        let mut stdin = self.stdin.lock().unwrap();
+        stdin.as_mut().is_some_and(|s| {
+            s.write_all(format!("{line}\n").as_bytes())
+                .and_then(|()| s.flush())
+                .is_ok()
+        })
+    }
+
+    /// Covers the displays and waits until the covers are up. False when it
+    /// couldn't (the change goes ahead anyway).
+    pub fn cover(&self) -> bool {
+        let said = self.said.lock().unwrap();
+        while said.try_recv().is_ok() {}
+        if !self.tell("cover") {
+            return false;
+        }
+        let deadline = Instant::now() + COVER_WAIT;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            match said.recv_timeout(left) {
+                Ok(line) if line.trim() == "covered" => return true,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        eprintln!("curtain: no covers for the display change");
+        false
+    }
+
+    /// The change is done: the covers come down shortly.
+    pub fn uncover(&self) {
+        self.tell("uncover");
+    }
 }
 
 impl Indicator {
@@ -75,13 +134,29 @@ impl Indicator {
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let mut line = String::new();
-            let _ = BufReader::new(stdout).read_line(&mut line);
-            let _ = tx.send(line);
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
         });
         let pid = child.id() as i32;
-        let indicator = Self { child: Some(child) };
-        match rx.recv_timeout(READY_WAIT) {
+        let shield = Shield {
+            stdin: Arc::new(Mutex::new(child.stdin.take())),
+            said: Arc::new(Mutex::new(rx)),
+        };
+        let indicator = Self {
+            child: Some(child),
+            shield,
+        };
+        let first = indicator
+            .shield
+            .said
+            .lock()
+            .unwrap()
+            .recv_timeout(READY_WAIT);
+        match first {
             Ok(line) if line.trim() == "ready" => {
                 crate::capture::exclude_process(pid);
                 Ok(indicator)
@@ -94,11 +169,13 @@ impl Indicator {
 
 impl Indicator {
     /// Takes it down without locking: nothing reached a client.
-    pub fn release(mut self) {
-        if let Some(stdin) = self.child.as_mut().and_then(|c| c.stdin.as_mut()) {
-            let _ = stdin.write_all(b"release\n");
-            let _ = stdin.flush();
-        }
+    pub fn release(self) {
+        self.shield.tell("release");
+    }
+
+    /// For covering the displays during a mode change.
+    pub fn shield(&self) -> Shield {
+        self.shield.clone()
     }
 }
 
@@ -111,7 +188,7 @@ impl Drop for Indicator {
         // Closing stdin ends it (with the curtain: after locking). Waited
         // for on a thread of its own, so the agent goes on; killed only if
         // it hangs well past locking.
-        drop(child.stdin.take());
+        drop(self.shield.stdin.lock().unwrap().take());
         std::thread::spawn(move || {
             let deadline = Instant::now() + LOCK_WAIT + Duration::from_secs(2);
             while Instant::now() < deadline {
@@ -138,16 +215,22 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     let stop = Arc::new(AtomicBool::new(false));
     let released = Arc::new(AtomicBool::new(false));
+    // Asked for by the agent around a display mode change (Shield).
+    let cover_asked = Arc::new(AtomicBool::new(false));
+    let uncover_asked = Arc::new(AtomicBool::new(false));
     {
         let (stop, released) = (stop.clone(), released.clone());
+        let (cover_asked, uncover_asked) = (cover_asked.clone(), uncover_asked.clone());
         std::thread::spawn(move || {
             // The agent holds the other end; EOF means it's done or gone.
             for line in std::io::stdin().lines() {
-                match line {
-                    Ok(l) if l.trim() == "release" => {
+                match line.as_deref().map(str::trim) {
+                    Ok("release") => {
                         released.store(true, Ordering::Relaxed);
                         break;
                     }
+                    Ok("cover") => cover_asked.store(true, Ordering::Relaxed),
+                    Ok("uncover") => uncover_asked.store(true, Ordering::Relaxed),
                     Ok(_) => {}
                     Err(_) => break,
                 }
@@ -199,8 +282,34 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let started = Instant::now();
     let mut ready = false;
     let mut border_up = true;
+    // Covers for a display mode change, and when they come down.
+    let mut change_cover: Option<(crate::curtain::Cover, Instant)> = None;
     while !stop.load(Ordering::Relaxed) {
-        pump(&app, 0.05);
+        pump(&app, 0.01);
+        if cover_asked.swap(false, Ordering::Relaxed) {
+            // Only where the gamma keeps the displays black; the cover
+            // windows, if up, stay up anyway.
+            if curtain && cover.is_none() && change_cover.is_none() {
+                let c = crate::curtain::Cover::wide(mtm, CURTAIN_LEVEL);
+                c.show();
+                pump(&app, 0.0);
+                change_cover = Some((c, Instant::now() + COVER_AT_MOST));
+            }
+            println!("covered");
+            let _ = std::io::stdout().flush();
+        }
+        if uncover_asked.swap(false, Ordering::Relaxed)
+            && let Some((_, until)) = &mut change_cover
+        {
+            *until = Instant::now() + UNCOVER_AFTER;
+        }
+        if change_cover
+            .as_ref()
+            .is_some_and(|(_, until)| Instant::now() >= *until)
+            && let Some((c, _)) = change_cover.take()
+        {
+            c.hide();
+        }
         if !ready && started.elapsed() > Duration::from_millis(150) {
             // The window server has them; the agent can start capturing.
             println!("ready");

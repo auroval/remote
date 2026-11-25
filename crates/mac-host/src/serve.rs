@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 use anyhow::{Context, anyhow};
 use auroval_proto::quic;
 use auroval_proto::trust::Identity;
-use auroval_proto::{Codec, DEFAULT_PORT, HostControl, picture_size, worth_resizing};
+use auroval_proto::{Codec, DEFAULT_PORT, DisplayMode, HostControl, picture_size, worth_resizing};
 use objc2_core_graphics::{
     CGPreflightScreenCaptureAccess, CGRequestPostEventAccess, CGRequestScreenCaptureAccess,
 };
@@ -243,7 +243,7 @@ async fn client(
     let last_move = cursor::LastMove::default();
     let _pointer = local_pointer.then(|| {
         let notices = notices.clone();
-        cursor::Watcher::start(display.bounds, last_move.clone(), move |msg| {
+        cursor::Watcher::start(display.id, last_move.clone(), move |msg| {
             let _ = notices.send(msg);
         })
     });
@@ -280,6 +280,13 @@ async fn client(
                 auroval_proto::LoginResult::NotAtLoginWindow,
             ));
         },
+        // Switching the display mode needs the installed host's agent,
+        // which restores it however the session ends.
+        |mode| {
+            if mode == DisplayMode::Match {
+                println!("  display: match needs the installed host; serve stays at fit");
+            }
+        },
     ));
     // No sound is no reason to end the session.
     let sound = audio
@@ -296,7 +303,7 @@ async fn client(
         .flatten();
     // The client plays it now; two speakers would echo.
     let muted = sound.as_ref().and_then(|_| crate::mute::mute());
-    let injector = stream::spawn_injector(display.bounds, last_move);
+    let injector = stream::spawn_injector(display.id, last_move);
     let input = tokio::spawn(session::read_input(conn.clone(), move |e| {
         injector.send(e).is_ok()
     }));

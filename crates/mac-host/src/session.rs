@@ -13,8 +13,9 @@ use anyhow::{Context, bail};
 use auroval_proto::trust::{Fingerprint, Role, start_pake};
 use auroval_proto::{
     AudioPacket, CLOSE_CODEC, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN,
-    CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl, Codec, DEFAULT_PORT, Hello, HostControl,
-    InputEvent, Intent, MAX_CLIPBOARD, PROTOCOL_VERSION, PairMsg, VideoFrame, Welcome, quic,
+    CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl, Codec, DEFAULT_PORT, DisplayMode, Hello,
+    HostControl, InputEvent, Intent, MAX_CLIPBOARD, PROTOCOL_VERSION, PairMsg, VideoFrame, Welcome,
+    quic,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, unbounded_channel};
 
@@ -325,9 +326,11 @@ pub async fn welcome(
 
 /// Handles the control stream until it ends: keyframe requests go to
 /// `keyframe`, text the client copied to `clipboard`, its window size to
-/// `view_size`, pings are answered with the host clock, and `notices` (e.g.
+/// `view_size`, login credentials to `login`, fit or match to `display`, pings are answered with the
+/// host clock, and `notices` (e.g.
 /// [`HostControl::Session`] or the Mac's copies) are passed on to the
 /// client.
+#[allow(clippy::too_many_arguments)] // one handler per kind of message
 pub async fn read_control(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
@@ -336,6 +339,7 @@ pub async fn read_control(
     clipboard: impl Fn(String),
     view_size: impl Fn(u32, u32),
     login: impl Fn(auroval_proto::Credentials),
+    display: impl Fn(DisplayMode),
 ) {
     // Reading and writing run side by side: a read can't be interrupted
     // halfway through a message without losing the stream.
@@ -345,6 +349,7 @@ pub async fn read_control(
             match msg {
                 ClientControl::RequestKeyframe => keyframe(),
                 ClientControl::ViewSize { width, height } => view_size(width, height),
+                ClientControl::Display(mode) => display(mode),
                 ClientControl::Clipboard(text) if text.len() <= MAX_CLIPBOARD => clipboard(text),
                 ClientControl::Clipboard(text) => {
                     println!(
@@ -408,7 +413,7 @@ pub async fn send_frames(
     frames: &mut tokio::sync::mpsc::Receiver<Result<VideoFrame, String>>,
     skipped: Option<Arc<AtomicU64>>,
 ) -> anyhow::Result<()> {
-    let mut stats = (0u64, 0u64); // frames, bytes
+    let mut stats = crate::pipeline::Sent::default();
     let mut next_report = Instant::now() + Duration::from_secs(5);
     loop {
         let item = tokio::select! {
@@ -421,23 +426,30 @@ pub async fn send_frames(
             None => return Ok(()),
         };
         frame.timing.sent_us = micros(host_time());
-        stats.0 += 1;
-        stats.1 += frame.data.len() as u64;
+        let bytes = frame.data.len();
+        let writing = Instant::now();
         if quic::send(video, &frame).await.is_err() {
             return Ok(()); // client went away mid-frame
         }
+        stats.frame(bytes, writing.elapsed().as_micros() as i64);
         if Instant::now() >= next_report {
             let skipped = skipped
                 .as_ref()
                 .map(|s| format!(" ({} skipped: encoder busy)", s.swap(0, Ordering::Relaxed)))
                 .unwrap_or_default();
+            let path = conn.stats().path;
             println!(
-                "  sent {} frames, {:.1} Mbit/s over the last 5 s{skipped}, {} dropped (client behind)",
-                stats.0,
-                stats.1 as f64 * 8.0 / 5e6,
+                "  sent {} frames, {:.1} Mbit/s over the last 5 s{skipped}, {} dropped (client behind) | {}",
+                stats.frames(),
+                stats.mbps(5.0),
                 DROPPED_BEHIND.swap(0, Ordering::Relaxed),
+                stats.line(crate::pipeline::Path {
+                    rtt_us: path.rtt.as_micros() as i64,
+                    cwnd: path.cwnd,
+                    lost_packets: path.lost_packets,
+                    congestion_events: path.congestion_events,
+                }),
             );
-            stats = (0, 0);
             next_report += Duration::from_secs(5);
         }
     }

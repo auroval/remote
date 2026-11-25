@@ -9,7 +9,9 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
-use auroval_proto::{ClipboardEcho, Credentials, InputEvent, LoginResult, MAX_CLIPBOARD, Welcome};
+use auroval_proto::{
+    ClipboardEcho, Credentials, DisplayMode, InputEvent, LoginResult, MAX_CLIPBOARD, Welcome,
+};
 use sdl3::clipboard::ClipboardUtil;
 use sdl3::event::Event;
 use sdl3::keyboard::Scancode;
@@ -208,6 +210,7 @@ pub struct LinkView<'a> {
     pub pointer: Receiver<auroval_proto::HostControl>,
     /// Our size in pixels, for the host to size the picture to.
     pub view: UnboundedSender<(u32, u32)>,
+    pub display: DisplayChoice<'a>,
     /// The Mac's sound, when asked for.
     pub audio: Option<Receiver<auroval_proto::AudioPacket>>,
     /// Our microphone, for the Mac, when asked for and taken.
@@ -218,7 +221,17 @@ pub struct LinkView<'a> {
     /// The account name remembered for this host, to prefill the form.
     pub login_account: Option<String>,
     /// Remembers the account name for this host (never the password).
-    pub remember_account: Box<dyn Fn(&str)>,
+    pub remember_account: &'a dyn Fn(&str),
+}
+
+/// Fit or match (#111): D switches while input is local.
+pub struct DisplayChoice<'a> {
+    /// What the session starts with.
+    pub mode: DisplayMode,
+    /// To the host.
+    pub send: UnboundedSender<DisplayMode>,
+    /// Keeps the choice for this host.
+    pub remember: &'a dyn Fn(DisplayMode),
 }
 
 /// Also the Flatpak ID and the name of the desktop file.
@@ -234,6 +247,8 @@ pub fn run(
 ) -> anyhow::Result<()> {
     // The Wayland app ID: ties the window to its desktop entry and icon.
     sdl3::hint::set("SDL_APP_ID", APP_ID);
+    let present = Present::from_env();
+    present.set_hints();
     let sdl = sdl3::init().map_err(|e| anyhow!("SDL: {e}"))?;
     let video = sdl.video().map_err(|e| anyhow!("SDL video: {e}"))?;
     // No sound output is no reason to go without the picture.
@@ -260,19 +275,26 @@ pub fn run(
         .build()
         .context("creating window")?;
     let mut canvas = window.into_canvas();
-    let present = Present::from_env();
-    if present == Present::Vsync {
-        // SAFETY: the renderer is alive for as long as `canvas`.
-        let ok = unsafe { sdl3::sys::render::SDL_SetRenderVSync(canvas.raw(), 1) };
-        if ok {
-            say!("presenting with vsync, one picture per refresh");
-        } else {
-            warn!(
-                "no vsync ({}); presenting as pictures come",
-                sdl3::get_error()
-            );
-        }
-    }
+    // SAFETY: the renderer is alive for as long as `canvas`; SDL owns the name.
+    let renderer = unsafe {
+        let name = sdl3::sys::render::SDL_GetRendererName(canvas.raw());
+        (!name.is_null()).then(|| {
+            std::ffi::CStr::from_ptr(name)
+                .to_string_lossy()
+                .into_owned()
+        })
+    };
+    let renderer = renderer.unwrap_or_else(|| "?".into());
+    // SAFETY: as above.
+    let vsync_on =
+        present.vsync() && unsafe { sdl3::sys::render::SDL_SetRenderVSync(canvas.raw(), 1) };
+    let present = if present.vsync() && !vsync_on {
+        warn!("no vsync ({})", sdl3::get_error());
+        Present::Latest
+    } else {
+        present
+    };
+    say!("{} (renderer {renderer})", present.describe());
     let mut pacer = Pacer::new(present);
     if let Some(hz) = canvas
         .window()
@@ -339,6 +361,7 @@ pub fn run(
     #[cfg(feature = "test-hooks")]
     let hooks = crate::testhooks::Hooks::start();
 
+    let mut display_mode = link.display.mode;
     let mut fps = 0.0;
     let mut at_login = link.login_window.load(Ordering::Relaxed);
     let mut state = State::Connected;
@@ -445,6 +468,20 @@ pub fn run(
                         });
                     }
                 }
+                // Input is local: D switches between fit and match.
+                Event::KeyDown {
+                    scancode: Some(Scancode::D),
+                    repeat: false,
+                    ..
+                } if !forwarder.grabbed() => {
+                    display_mode = match display_mode {
+                        DisplayMode::Fit => DisplayMode::Match,
+                        DisplayMode::Match => DisplayMode::Fit,
+                    };
+                    say!("display: {}", display_mode.name());
+                    let _ = link.display.send.send(display_mode);
+                    (link.display.remember)(display_mode);
+                }
                 _ => {
                     if let Some(grabbed) = forwarder.handle(&event, &canvas, size) {
                         apply_grab(&mut canvas, grabbed, &mut pointer, (w, h));
@@ -457,10 +494,11 @@ pub fn run(
             }
         }
         // Tell the host our size, so it sends pictures that fit: right away
-        // the first time, after 250 ms without change later.
-        if let Ok(px) = canvas.output_size()
-            && Some(px) != view_sent
-        {
+        // the first time, after 250 ms without change later. The whole
+        // window, not the letterboxed picture in it (`output_size` with a
+        // logical size): match needs the window's own aspect ratio.
+        let px = canvas.window().size_in_pixels();
+        if Some(px) != view_sent {
             match view_new {
                 Some((p, _)) if p == px => {}
                 _ => view_new = Some((px, Instant::now())),
@@ -599,7 +637,7 @@ pub fn run(
         }
         let quiet_us = now_us() - link.last_heard.load(Ordering::Relaxed);
         let stalled = (connected && quiet_us > STALLED_US).then_some(quiet_us as u64 / 1_000_000);
-        let overlay = Overlay::new(
+        let mut overlay = Overlay::new(
             &state,
             host,
             &host_key().name,
@@ -609,6 +647,7 @@ pub fn run(
             at_login,
             login.form.clone(),
         );
+        overlay.offer_display(display_mode);
         // Redraw on a new picture, or when the overlay changed; while it
         // shows something that counts, a few times a second is plenty.
         let changed = drawn.as_ref() != Some(&overlay);
@@ -648,7 +687,7 @@ pub fn run(
                         forwarder.grabbed(),
                         at_login,
                         &overlay,
-                        canvas.output_size().unwrap_or_default(),
+                        canvas.window().size_in_pixels(),
                         pointer.local(),
                         size,
                         player.as_ref().map(|p| &*p.stats),
@@ -680,7 +719,13 @@ pub fn run(
                 };
                 let _ = reply.send(answer);
             }
+            let before = now_us();
             canvas.present();
+            if picture.is_some() {
+                let took = now_us() - before;
+                frames.present_took(took);
+                pacer.presented(took, frames.refresh_us());
+            }
             drawn = Some(overlay);
             last_draw = Instant::now();
         } else if last_draw.elapsed() > Duration::from_secs(1) {

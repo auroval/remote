@@ -100,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "auroval-linux-client"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "auroval-mac-host"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "aes",
  "anyhow",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "auroval-proto"
-version = "0.1.0-alpha.9"
+version = "0.1.0-alpha.10"
 dependencies = [
  "libc",
  "png",
