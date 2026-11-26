@@ -416,6 +416,7 @@ mod tests {
                 },
                 modified_s: None,
             }],
+            ..Default::default()
         };
         let why = check(&offer).unwrap_err();
         assert!(why.contains("500.0 MB"), "{why}");

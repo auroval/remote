@@ -48,7 +48,7 @@ pub struct LinkView<'a> {
     /// Clipboard sync: our copies out, the Mac's in. `None` when off.
     pub clipboard: Option<(UnboundedSender<String>, Receiver<String>)>,
     /// Files copied here, for the Mac. `None` without clipboard sync.
-    pub files: Option<UnboundedSender<crate::copies::FileCopy>>,
+    pub files: Option<UnboundedSender<crate::copies::Outgoing>>,
     /// The Mac's pointer shape and moves.
     pub pointer: Receiver<auroval_proto::HostControl>,
     /// Our size in pixels, for the host to size the picture to.
@@ -165,6 +165,8 @@ pub fn run(
         echo.noted(&text);
     }
     let mut copies = crate::copies::CopyEcho::default();
+    let mut drops = crate::drops::Drops::default();
+    let mut dropped: Vec<crate::drops::Step> = Vec::new();
     if link.files.is_some() {
         copies.noted(crate::copies::on_clipboard());
     }
@@ -255,7 +257,7 @@ pub fn run(
         let connected = state == State::Connected;
 
         #[allow(unused_mut)]
-        let mut batch: Vec<Event> = events.poll_iter().collect();
+        let mut batch: Vec<Event> = crate::drops::poll(&mut events, &mut drops, &mut dropped);
         // Test commands: input joins the real events; snapshot and state
         // are answered after the next draw.
         #[cfg(feature = "test-hooks")]
@@ -299,7 +301,7 @@ pub fn run(
                         && let Some(copy) = crate::copies::on_clipboard()
                         && copies.is_new(&copy)
                     {
-                        let _ = out.send(copy);
+                        let _ = out.send(crate::copies::Outgoing::Copy(copy));
                     }
                 }
                 // While disconnected the window is ours: Esc quits, Enter
@@ -352,6 +354,32 @@ pub fn run(
                             toast_until = Some(Instant::now() + TOAST);
                         }
                         set_title(&mut canvas, &title, fps, grabbed, at_login, &state);
+                    }
+                }
+            }
+        }
+        // Files dragged over the window and dropped on it (F10). A drop is
+        // the user's own doing: no echo check, but clipboard sync must be
+        // on, as for copies.
+        for step in dropped.drain(..) {
+            match step {
+                crate::drops::Step::Over(x, y) if connected => {
+                    if let Some(at) = crate::input::to_picture(&canvas, size, x, y) {
+                        forwarder.drag_over(at);
+                    }
+                }
+                crate::drops::Step::Over(..) => {}
+                crate::drops::Step::Dropped { paths, at: (x, y) } => {
+                    let at = crate::input::to_picture(&canvas, size, x, y);
+                    match (&link.files, at) {
+                        _ if !connected => crate::copies::not_dropped("not connected to the Mac"),
+                        (None, _) => crate::copies::not_dropped(
+                            "clipboard sync is off for this session, and drops need it",
+                        ),
+                        (_, None) => crate::copies::not_dropped("dropped beside the Mac's screen"),
+                        (Some(out), Some(at)) => {
+                            let _ = out.send(crate::copies::Outgoing::Drop { paths, at });
+                        }
                     }
                 }
             }

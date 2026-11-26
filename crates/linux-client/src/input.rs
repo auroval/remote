@@ -113,6 +113,13 @@ impl Forwarder {
         let _ = self.out.send(event);
     }
 
+    /// Files are being dragged over the picture at `at` (`0.0..=1.0`): the
+    /// Mac's pointer follows, so the drop lands where it shows. Grabbed or
+    /// not: dragging onto the window is the user's choice either way.
+    pub fn drag_over(&self, at: (f32, f32)) {
+        self.send(InputEvent::MouseMove { x: at.0, y: at.1 });
+    }
+
     /// Handles one SDL event. `remote` is the remote display size, which is
     /// also the renderer's logical size. Returns the new grab state when it
     /// changed, for the window to apply.
@@ -266,6 +273,29 @@ fn to_remote(canvas: &WindowCanvas, remote: (u32, u32), x: f32, y: f32) -> Optio
     Some(normalize(lx, ly, remote))
 }
 
+/// Where `x, y` (window coordinates, as SDL gives them for the mouse and
+/// for drops) is on the Mac's picture, `0.0..=1.0`; `None` beside it, in
+/// the black bars.
+pub fn to_picture(canvas: &WindowCanvas, remote: (u32, u32), x: f32, y: f32) -> Option<(f32, f32)> {
+    let (mut lx, mut ly) = (0.0f32, 0.0f32);
+    let ok = unsafe {
+        sdl3::sys::render::SDL_RenderCoordinatesFromWindow(canvas.raw(), x, y, &mut lx, &mut ly)
+    };
+    if !ok {
+        return None;
+    }
+    inside(lx, ly, remote)
+}
+
+/// `lx, ly` in the picture's own pixels, normalized, if it's on it.
+fn inside(lx: f32, ly: f32, remote: (u32, u32)) -> Option<(f32, f32)> {
+    if remote.0 == 0 || remote.1 == 0 {
+        return None;
+    }
+    let (x, y) = (lx / remote.0 as f32, ly / remote.1 as f32);
+    ((0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y)).then_some((x, y))
+}
+
 fn normalize(lx: f32, ly: f32, remote: (u32, u32)) -> (f32, f32) {
     (
         (lx / remote.0 as f32).clamp(0.0, 1.0),
@@ -295,6 +325,15 @@ mod tests {
     fn normalize_scales_and_clamps() {
         assert_eq!(normalize(1728.0, 558.5, (3456, 2234)), (0.5, 0.25));
         assert_eq!(normalize(-10.0, 5000.0, (3456, 2234)), (0.0, 1.0));
+    }
+
+    #[test]
+    fn drops_beside_the_picture_are_nowhere() {
+        assert_eq!(inside(1728.0, 558.5, (3456, 2234)), Some((0.5, 0.25)));
+        assert_eq!(inside(0.0, 2234.0, (3456, 2234)), Some((0.0, 1.0)));
+        assert_eq!(inside(-1.0, 10.0, (3456, 2234)), None);
+        assert_eq!(inside(10.0, 2235.0, (3456, 2234)), None);
+        assert_eq!(inside(10.0, 10.0, (0, 0)), None);
     }
 
     #[test]

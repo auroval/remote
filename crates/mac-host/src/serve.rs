@@ -324,7 +324,7 @@ async fn client(
     let muted = sound.as_ref().and_then(|_| crate::mute::mute());
     let injector = stream::spawn_injector(display.id, last_move);
     let inbox = pasteboard.as_deref().map(|p| {
-        Arc::new(crate::agent::inbox(p, move |r| {
+        Arc::new(crate::agent::inbox(p, display.id, move |r| {
             let _ = file_notices.send(match r {
                 Ok(()) => HostControl::FilesTaken,
                 Err(why) => HostControl::FilesRefused(why),

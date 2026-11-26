@@ -29,6 +29,8 @@ mod curtain;
 mod daemon;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod display;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod drop;
 #[cfg(target_os = "macos")]
 mod dump;
 #[cfg(target_os = "macos")]
@@ -112,6 +114,7 @@ fn main() {
         Some("_postinstall") => install::postinstall(&args[1..]),
         Some("_info-plist") => info_plist(&args[1..]),
         Some("_indicator") => indicator::run(&args[1..]),
+        Some("_drop") => drop::run(&args[1..]),
         Some("_pair-for") => pairing::run_for(&args[1..]),
         Some("_input-allowed") => std::process::exit(if setup::input_allowed() { 0 } else { 1 }),
         Some("version") | Some("--version") => {

@@ -358,7 +358,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
 }
 
 /// Handles the window server's events for up to `seconds`.
-fn pump(app: &NSApplication, seconds: f64) {
+pub(crate) fn pump(app: &NSApplication, seconds: f64) {
     let until = NSDate::dateWithTimeIntervalSinceNow(seconds);
     while let Some(event) = unsafe {
         app.nextEventMatchingMask_untilDate_inMode_dequeue(

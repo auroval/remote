@@ -29,6 +29,8 @@ mod decoder;
 #[cfg(target_os = "linux")]
 mod discover;
 #[cfg(target_os = "linux")]
+mod drops;
+#[cfg(target_os = "linux")]
 mod dump;
 #[cfg(target_os = "linux")]
 mod frames;
