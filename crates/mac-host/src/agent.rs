@@ -167,6 +167,8 @@ struct Active {
     pasteboard: Option<pasteboard::Watcher>,
     /// Writes the files the client copied, for the pasteboard.
     files: Option<crate::files::Inbox>,
+    /// Reads the files copied on the Mac, for the client.
+    outbox: Option<crate::outbox::Outbox>,
     /// Sends the pointer's shape, when the client draws it.
     _pointer: Option<cursor::Watcher>,
     /// The client's window in pixels, once it said.
@@ -384,8 +386,19 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
     // Frames are bounded upstream (the stream drops when behind), and the
     // daemon reads as fast as it can, so this queue stays short.
     let (out, mut out_rx) = mpsc::unbounded_channel::<FromAgent>();
+    // Files copied on the Mac go out only when nothing else waits: a frame
+    // waits for at most one small chunk (crate::outbox::CHUNK) on the
+    // socket, never for a copy. The reader blocks on this queue, and on
+    // the daemon's answers for how far ahead it may read.
+    let (files_out, mut files_rx) = mpsc::channel::<FromAgent>(1);
     let mut writer = tokio::spawn(async move {
-        while let Some(msg) = out_rx.recv().await {
+        loop {
+            let msg = tokio::select! {
+                biased;
+                Some(m) = out_rx.recv() => m,
+                Some(m) = files_rx.recv() => m,
+                else => break,
+            };
             if ipc::write(&mut w, &msg).await.is_err() {
                 break;
             }
@@ -502,7 +515,8 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                     mbps,
                     in_flight: in_flight.max(1) as usize,
                 };
-                match start(&settings, &out, clipboard, codec, view, audio, speaker, mic) {
+                let outs = (&out, &files_out);
+                match start(&settings, outs, clipboard, codec, view, audio, speaker, mic) {
                     Ok(mut a) => {
                         println!(
                             "capturing {}x{} for the daemon, {codec}",
@@ -587,6 +601,16 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                     p.set(text);
                 }
             }
+            ToAgent::FilesOutWritten => {
+                if let Some(o) = active.as_ref().and_then(|a| a.outbox.as_ref()) {
+                    o.written();
+                }
+            }
+            ToAgent::FilesOutStopped => {
+                if let Some(o) = active.as_ref().and_then(|a| a.outbox.as_ref()) {
+                    o.stopped();
+                }
+            }
             ToAgent::Files(msg) => match active.as_ref().and_then(|a| a.files.as_ref()) {
                 Some(f) => f.handle(msg),
                 // The login window (or a session without clipboard).
@@ -617,6 +641,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
     drop(indicator);
     // Let the daemon hear why, before a restart.
     drop(out);
+    drop(files_out);
     if tokio::time::timeout(Duration::from_secs(1), &mut writer)
         .await
         .is_err()
@@ -638,7 +663,7 @@ fn release_unexposed(indicator: &mut Option<crate::indicator::Indicator>, expose
 #[expect(clippy::too_many_arguments)]
 fn start(
     settings: &StreamSettings,
-    out: &mpsc::UnboundedSender<FromAgent>,
+    (out, files_out): (&mpsc::UnboundedSender<FromAgent>, &mpsc::Sender<FromAgent>),
     clipboard: bool,
     codec: Codec,
     view: Option<(u32, u32)>,
@@ -675,11 +700,26 @@ fn start(
         None
     };
     // The login window has no user clipboard.
-    let pasteboard = (clipboard && user_session).then(|| {
+    let sync = clipboard && user_session;
+    let outbox = sync.then(|| {
+        let (files_out, out) = (files_out.clone(), out.clone());
+        outbox(
+            move |step| {
+                let _ = files_out.blocking_send(FromAgent::FilesOut(step));
+            },
+            move |why| {
+                let _ = out.send(FromAgent::Control(HostControl::FilesFailed(why)));
+            },
+        )
+    });
+    let pasteboard = outbox.as_ref().map(|o| {
         let out = out.clone();
-        pasteboard::Watcher::start(move |text| {
-            let _ = out.send(FromAgent::Clipboard(text));
-        })
+        pasteboard::Watcher::start(
+            move |text| {
+                let _ = out.send(FromAgent::Clipboard(text));
+            },
+            o.copier(),
+        )
     });
     let files = pasteboard.as_ref().map(|p| {
         let out = out.clone();
@@ -737,6 +777,7 @@ fn start(
         inputs: 0,
         pasteboard,
         files,
+        outbox,
         _pointer: pointer,
         view,
         display_mode: DisplayMode::Fit,
@@ -762,6 +803,25 @@ pub fn inbox(
             }
         },
         report,
+    )
+}
+
+/// Reads the files copied on the Mac into `sink`, for the client, while
+/// the screen is unlocked; `failed` tells the client why one can't go.
+pub fn outbox(
+    sink: impl Fn(auroval_proto::files::Incoming) + Send + 'static,
+    failed: impl Fn(String) + Send + 'static,
+) -> crate::outbox::Outbox {
+    crate::outbox::Outbox::start(
+        sink,
+        || {
+            if crate::curtain::screen_locked() {
+                Err("the Mac's screen is locked".into())
+            } else {
+                Ok(())
+            }
+        },
+        failed,
     )
 }
 

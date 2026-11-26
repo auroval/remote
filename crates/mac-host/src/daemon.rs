@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
+use auroval_proto::files::Incoming;
 use auroval_proto::trust::Identity;
 use auroval_proto::{AudioPacket, Codec, DisplayMode, HostControl, SessionKind, VideoFrame};
 use auroval_proto::{CLOSE_LINK_LOST, CLOSE_NO_AGENT, CLOSE_NO_PERMISSION};
@@ -264,7 +265,15 @@ struct Agent {
     sound: Mutex<Option<quinn::Connection>>,
     /// The Auroval device, when the daemon serves it.
     speaker: Option<Arc<Speaker>>,
+    /// Where the Mac's copies of files go while a client with clipboard
+    /// sync uses this agent: straight to its stream writer, never queued
+    /// behind (or holding up) the frames.
+    files: Mutex<Option<FilesOut>>,
 }
+
+/// A session's writer of the Mac's copies of files ([`session::send_files`]),
+/// with the agent to answer each chunk to.
+type FilesOut = mpsc::UnboundedSender<(Incoming, mpsc::UnboundedSender<ToAgent>)>;
 
 /// Who owns the console: [`console_uid`] in the daemon, a stand-in in tests.
 type ConsoleOwner = Arc<dyn Fn() -> Option<u32> + Send + Sync>;
@@ -372,6 +381,7 @@ async fn agent_connection(id: u64, stream: UnixStream, agents: &Agents) -> anyho
         client: Mutex::new(None),
         sound: Mutex::new(None),
         speaker: agents.speaker.clone(),
+        files: Mutex::new(None),
     });
     println!("agent {id}: uid {}, pid {}", agent.uid, agent.pid);
     agents.list.lock().unwrap().push(agent.clone());
@@ -392,6 +402,16 @@ async fn agent_connection(id: u64, stream: UnixStream, agents: &Agents) -> anyho
         if let FromAgent::Audio(packet) = &msg {
             if let Some(conn) = agent.sound.lock().unwrap().as_ref() {
                 session::send_audio(conn, packet);
+            }
+            continue;
+        }
+        if let FromAgent::FilesOut(step) = msg {
+            let is_data = matches!(step, Incoming::Data(_));
+            let files = agent.files.lock().unwrap().clone();
+            let passed = files.is_some_and(|tx| tx.send((step, agent.to.clone())).is_ok());
+            if !passed && is_data {
+                // Nowhere to go: still answered, so the agent doesn't wait.
+                let _ = agent.to.send(ToAgent::FilesOutWritten);
             }
             continue;
         }
@@ -448,6 +468,7 @@ impl Drop for InUse {
     fn drop(&mut self) {
         self.0.client.lock().unwrap().take();
         self.0.sound.lock().unwrap().take();
+        self.0.files.lock().unwrap().take();
         if let Some(speaker) = &self.0.speaker {
             speaker.stop(self.0.id);
         }
@@ -649,6 +670,25 @@ async fn client(
         files,
     ));
 
+    // The Mac's copies of files, out to the client; each chunk answered to
+    // the agent that read it, so it reads on.
+    let (files_out, files_rx) = mpsc::unbounded_channel();
+    let sending_files = clipboard.then(|| {
+        tokio::spawn(session::send_files(
+            conn.clone(),
+            files_rx,
+            |agent: &mpsc::UnboundedSender<ToAgent>, sent| {
+                let _ = agent.send(match sent {
+                    session::FileSent::Written => ToAgent::FilesOutWritten,
+                    session::FileSent::Stopped => ToAgent::FilesOutStopped,
+                });
+            },
+        ))
+    });
+
+    let files = sending_files.is_some().then_some(files_out);
+    *agent.files.lock().unwrap() = files.clone();
+
     let (frames_tx, mut frames) = mpsc::channel::<Result<VideoFrame, String>>(FRAME_QUEUE);
     let follow = tokio::spawn(follow_console(Following {
         rx,
@@ -665,10 +705,14 @@ async fn client(
         sound,
         mic,
         client,
+        files,
     }));
     let result = session::send_frames(conn, &mut video, &mut frames, None).await;
     control.abort();
     input.abort();
+    if let Some(t) = sending_files {
+        t.abort();
+    }
     if let Some(t) = mic_in {
         t.abort();
     }
@@ -696,6 +740,8 @@ struct Following {
     mic: bool,
     /// The client's name.
     client: String,
+    /// Where the Mac's copies of files go, with clipboard sync.
+    files: Option<FilesOut>,
 }
 
 /// Relays the current agent's frames, and switches to the agent of the new
@@ -733,7 +779,7 @@ async fn follow_console(mut f: Following) {
                         continue;
                     }
                     // Sent straight to the client by the agent's reader.
-                    Some(FromAgent::Hello { .. } | FromAgent::Audio(_) | FromAgent::SoundViaDevice) => continue,
+                    Some(FromAgent::Hello { .. } | FromAgent::Audio(_) | FromAgent::SoundViaDevice | FromAgent::FilesOut(_)) => continue,
                     Some(FromAgent::Files(result)) => {
                         let _ = f.notices.send(match result {
                             Ok(()) => HostControl::FilesTaken,
@@ -776,6 +822,7 @@ async fn follow_console(mut f: Following) {
                         ) {
                             Ok(in_use) => {
                                 f.in_use = in_use; // drops the old one: Stop
+                                *next.files.lock().unwrap() = f.files.clone();
                                 *f.current.lock().unwrap() = next.clone();
                                 let _ = f.notices.send(HostControl::Session(kind(&next)));
                                 orphaned = None;
@@ -862,6 +909,7 @@ mod tests {
             client: Mutex::new(None),
             sound: Mutex::new(None),
             speaker: None,
+            files: Mutex::new(None),
         });
         agents.list.lock().unwrap().push(agent.clone());
         (agent, rx)
@@ -940,6 +988,7 @@ mod tests {
             sound: None,
             mic: false,
             client: "test".into(),
+            files: None,
         }));
         Session {
             frames,

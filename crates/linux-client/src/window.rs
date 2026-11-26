@@ -168,6 +168,8 @@ pub fn run(
     if link.files.is_some() {
         copies.noted(crate::copies::on_clipboard());
     }
+    // The folder for the Mac's copies, while the window is open.
+    let _received = link.files.is_some().then(crate::received::Session::start);
     // On Wayland the clipboard only reaches a window with focus: what's on
     // it already shows up as a change once ours gets focus. Changes this
     // soon after the start are that, not copies made in the session.
@@ -312,6 +314,23 @@ pub fn run(
                     _ => {}
                 },
                 _ if !connected => {}
+                // Input is local: Y or N answers whether to send a big
+                // copy, Esc cancels one on its way.
+                Event::KeyDown {
+                    scancode: Some(sc @ (Scancode::Y | Scancode::N)),
+                    repeat: false,
+                    ..
+                } if !forwarder.grabbed() && crate::transfer::asking() => {
+                    crate::transfer::answer(sc == Scancode::Y);
+                }
+                Event::KeyDown {
+                    scancode: Some(Scancode::Escape),
+                    repeat: false,
+                    ..
+                } if !forwarder.grabbed() && crate::transfer::shown() => {
+                    say!("files: cancelled");
+                    crate::transfer::cancel();
+                }
                 // Input is local: D switches between fit and match.
                 Event::KeyDown {
                     scancode: Some(Scancode::D),
@@ -374,6 +393,16 @@ pub fn run(
         if let Some((_, from_mac)) = &link.clipboard {
             while let Ok(text) = from_mac.try_recv() {
                 copied_on_mac(&clipboard, &mut echo, &text);
+            }
+        }
+        // Files the Mac copied, complete: on our clipboard, and noted so
+        // they don't go back.
+        if link.files.is_some()
+            && let Some(paths) = crate::received::take_ready()
+        {
+            match crate::received::put_on_clipboard(&paths) {
+                Ok(_) => copies.noted(crate::copies::on_clipboard()),
+                Err(e) => warn!("files: can't put the Mac's copy on the clipboard: {e:#}"),
             }
         }
         if link.login_window.load(Ordering::Relaxed) != at_login {
@@ -474,6 +503,10 @@ pub fn run(
         overlay.offer_display(display_mode);
         if connected && let Some(badge) = crate::copies::notice() {
             overlay.badges.insert(0, badge);
+        }
+        if connected {
+            let transfers = crate::transfer::badges(&host_key().name, forwarder.grabbed());
+            overlay.badges.splice(0..0, transfers);
         }
         // Redraw on a new picture, or when the overlay changed; while it
         // shows something that counts, a few times a second is plenty.
