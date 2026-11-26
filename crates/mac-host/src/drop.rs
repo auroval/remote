@@ -9,6 +9,11 @@
 //! pointer wiggled and let go there. The session ends with the operation
 //! the app there chose, or none when nothing took the files.
 //!
+//! When the posted press does reach the window, AppKit runs the drag in a
+//! loop of its own inside that press, so the main thread is stuck until the
+//! button comes up. The wiggle and the release therefore go out from a
+//! thread of their own, or the drag would wait for a real click.
+//!
 //! AppKit needs the main thread, which the agent's runtime holds (see
 //! [`crate::indicator`]), so the drag runs in a helper process:
 //! `auroval-agent _drop <x> <y> <path>…`. Its exit status says how it went.
@@ -84,6 +89,8 @@ mod mac {
     use std::cell::Cell;
     use std::path::PathBuf;
     use std::process::{Command, Stdio};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
     use objc2::rc::Retained;
@@ -157,7 +164,11 @@ mod mac {
 
     struct Ivars {
         urls: Vec<Retained<NSURL>>,
+        /// Where the drop goes.
+        at: Point,
         started: Cell<bool>,
+        /// Set once the release went out.
+        released: Arc<AtomicBool>,
         /// The operation the drag ended with, once it ended.
         ended: Cell<Option<NSDragOperation>>,
     }
@@ -203,10 +214,18 @@ mod mac {
     );
 
     impl DropView {
-        fn new(mtm: MainThreadMarker, frame: NSRect, urls: Vec<Retained<NSURL>>) -> Retained<Self> {
+        fn new(
+            mtm: MainThreadMarker,
+            frame: NSRect,
+            urls: Vec<Retained<NSURL>>,
+            at: Point,
+            released: Arc<AtomicBool>,
+        ) -> Retained<Self> {
             let this = Self::alloc(mtm).set_ivars(Ivars {
                 urls,
+                at,
                 started: Cell::new(false),
+                released,
                 ended: Cell::new(None),
             });
             unsafe { msg_send![super(this), initWithFrame: frame] }
@@ -248,7 +267,30 @@ mod mac {
                 window.setIgnoresMouseEvents(true);
                 window.setAlphaValue(0.0);
             }
+            // Not from the main loop: it may be stuck in AppKit's drag loop
+            // until the button comes up.
+            let (p, released) = (self.ivars().at, self.ivars().released.clone());
+            std::thread::spawn(move || wiggle_and_release(p, &released));
         }
+    }
+
+    /// Moves the pointer a few points off and back, so AppKit sees a drag,
+    /// and lets go at `p`.
+    fn wiggle_and_release(p: Point, released: &AtomicBool) {
+        std::thread::sleep(WIGGLE_FROM);
+        for d in WIGGLE {
+            post(
+                CGEventType::LeftMouseDragged,
+                Point {
+                    x: p.x + d,
+                    y: p.y + d,
+                },
+            );
+            std::thread::sleep(WIGGLE_STEP);
+        }
+        std::thread::sleep(RELEASE_AFTER);
+        post(CGEventType::LeftMouseUp, p);
+        released.store(true, Ordering::SeqCst);
     }
 
     /// Posts a left-button mouse event at `p`, marked as ours so a curtain
@@ -294,15 +336,20 @@ mod mac {
         // transparent pixels.
         window.setOpaque(true);
         window.setBackgroundColor(Some(&NSColor::systemBlueColor()));
-        let view = DropView::new(mtm, crate::indicator::rect(0.0, 0.0, SIZE, SIZE), urls);
+        let released = Arc::new(AtomicBool::new(false));
+        let view = DropView::new(
+            mtm,
+            crate::indicator::rect(0.0, 0.0, SIZE, SIZE),
+            urls,
+            p,
+            released.clone(),
+        );
         window.setContentView(Some(&view));
         window.orderFrontRegardless();
 
         let start = Instant::now();
         let mut pressed = false;
-        let mut dragging: Option<Instant> = None;
-        let mut moves = 0;
-        let mut released: Option<Instant> = None;
+        let mut released_at: Option<Instant> = None;
         let status = loop {
             crate::indicator::pump(&app, 0.01);
             if let Some(op) = view.ivars().ended.get() {
@@ -338,37 +385,18 @@ mod mac {
                     }
                 }
             }
-            if view.ivars().started.get() && dragging.is_none() {
-                dragging = Some(Instant::now());
-            }
-            if let Some(since) = dragging {
-                let t = since.elapsed();
-                while moves < WIGGLE.len() && t >= WIGGLE_FROM + WIGGLE_STEP * moves as u32 {
-                    let d = WIGGLE[moves];
-                    post(
-                        CGEventType::LeftMouseDragged,
-                        Point {
-                            x: p.x + d,
-                            y: p.y + d,
-                        },
-                    );
-                    moves += 1;
-                }
-                let last = WIGGLE_FROM + WIGGLE_STEP * WIGGLE.len() as u32;
-                if released.is_none() && t >= last + RELEASE_AFTER {
-                    post(CGEventType::LeftMouseUp, p);
-                    released = Some(Instant::now());
-                }
+            if released_at.is_none() && released.load(Ordering::SeqCst) {
+                released_at = Some(Instant::now());
             }
             if now >= FALLBACK_AT + END_WAIT * 2
-                || released.is_some_and(|r| r.elapsed() >= END_WAIT)
+                || released_at.is_some_and(|r| r.elapsed() >= END_WAIT)
             {
                 eprintln!("drop: the drag didn't end");
                 break NO_END;
             }
         };
         // Never leave the button down.
-        if released.is_none() && pressed {
+        if pressed && !released.load(Ordering::SeqCst) {
             post(CGEventType::LeftMouseUp, p);
         }
         crate::indicator::pump(&app, LINGER);
